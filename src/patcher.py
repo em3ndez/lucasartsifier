@@ -29,14 +29,14 @@ import shutil
 import struct
 import subprocess
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 import config
 import guards as G
 import ir as I
 import missability as M
 from sexpr import (code_finditer, code_search, depth1_else, fork_arms, form_chain, head_of,
-                   line_indent, mark_line, noncode_spans, read_file, skip_noncode,
+                   line_indent, mark_line, noncode_spans, read_all, read_file, skip_noncode,
                    statement_span)
 import trigger as T
 from trigger import (analyze_room, _var_assigned_rooms,
@@ -1574,6 +1574,83 @@ def _panel_view(text):
     return None, None
 
 
+def _const_eval(expr, cel):
+    """The value of a CONSTANT SCI arithmetic expression, or None where it is not constant.
+
+    `cel(view, loop, cel)` returns that cel's (width, height), so `CelWide`/`CelHigh` -- which is
+    how every one of these windows states its own size -- resolve out of the game's art. An
+    `(if c A else B)` is worth the LARGER arm: a row has to fit in whichever the game takes.
+
+    Enough arithmetic for a window rect and no more. A panel that computes its size through a
+    procedure (KQ5 picks its metrics per print language, `(localproc_0 2 2 2 2 4)`) is simply not
+    constant, and the caller falls back to what it can justify without a number."""
+    if isinstance(expr, int):
+        return expr
+    if not isinstance(expr, list) or not expr:
+        return None
+    op = str(expr[0])
+    args = expr[1:]
+    if op in ("CelWide", "CelHigh"):
+        try:
+            w, h = cel(*(int(a) for a in args[:3]))
+        except Exception:                              # noqa: BLE001 -- unreadable art
+            return None
+        return w if op == "CelWide" else h
+    if op == "if":
+        arms = [a for a in args[1:] if str(a) != "else"]
+        vals = [_const_eval(a, cel) for a in arms]
+        return max(vals) if vals and None not in vals else None
+    if op not in ("+", "-", "*", "/"):
+        return None
+    vals = [_const_eval(a, cel) for a in args]
+    if not vals or None in vals:
+        return None
+    out = vals[0]
+    for v in vals[1:]:
+        if op == "+":
+            out += v
+        elif op == "-":
+            out -= v
+        elif op == "*":
+            out *= v
+        else:
+            if v == 0:
+                return None
+            out = int(out / v)                         # SCI divides toward zero
+    return out
+
+
+def _rect_value(text, sel, at, cel):
+    """The value of the `top`/`bottom` the window at `at` gives itself, or None.
+
+    Both spellings: `(= top <expr>)` inside the window's own `open`, and a `top:` argument in the
+    send that builds it. Read from the enclosing form so a panel with two windows measures the
+    one it is being asked about."""
+    for pat in (r"\(=\s+%s\s+" % sel, r"\b%s:\s*" % sel):
+        for m in re.finditer(pat, text):
+            if abs(m.start() - at) > 4000:             # the same window, not the next one
+                continue
+            j = m.end()
+            while j < len(text) and text[j] in " \t\r\n":
+                j += 1
+            raw = (text[j:_balanced_span(text, j)] if text[j] == "("
+                   else (re.match(r"-?\d+", text[j:]) or _NO).group(0))
+            try:
+                forms = read_all(raw)
+            except Exception:                          # noqa: BLE001 -- unparsable fragment
+                continue
+            v = _const_eval(forms[0] if forms else None, cel)
+            if v is not None:
+                return v
+    return None
+
+
+class _NO:                                             # a match-shaped miss for _rect_value
+    @staticmethod
+    def group(_n):
+        return "x"
+
+
 def _frame_edges(text, at, pitch):
     """Splices that take a self-drawn window frame's BOTTOM EDGE down by `pitch`.
 
@@ -1796,6 +1873,32 @@ def _install_panel_chooser(src_dir, g, cfg=None):
     sibs = loops[int(loop)]["cels"]
     face_is_button_pair = (int(cel) == 0 and len(sibs) > 1
                            and (sibs[0].width, sibs[0].height) == (sibs[1].width, sibs[1].height))
+    # ⭐ AND THE LABEL MAY NOT BE THE COLOUR OF WHAT IT IS WRITTEN ON. The panel's own text colour
+    # is right for text on the PANEL; the plate is a different surface. KQ5 writes in index 0 and
+    # the only blank plate its art carries is a text-entry field whose interior is index 254 --
+    # DIFFERENT INDICES, THE SAME COLOUR, both (0, 0, 0). The label drew and could not be seen
+    # (measured on the running game before this existed). So compare the colours, not the
+    # indices, and fall back to the plate's own bevel: the bevel is what the art uses to stand
+    # out from that interior, so it is legible on it by construction.
+    #
+    # Only SCI1 views carry a palette to compare with. Where there is none the game's own choice
+    # stands -- KQ6 and LB2 are SCI1.1 and keep theirs, which the KQ6 play screenshot shows
+    # reading correctly anyway.
+    pal = {}
+    try:
+        pal = _gfx.view_palette(game, view_num)
+    except Exception:                                  # noqa: BLE001 -- unreadable palette
+        pass
+    if pal and str(ink).isdigit():
+        interior = face.pix[3 * face.width + 3]
+        if pal.get(int(ink)) == pal.get(interior):
+            edge = Counter(
+                face.pix[y * face.width + x]
+                for y in range(face.height) for x in range(face.width)
+                if (y < 3 or y >= face.height - 3 or x < 3 or x >= face.width - 3))
+            best = [c for c, _ in edge.most_common() if pal.get(c) != pal.get(interior)]
+            if best:
+                ink = str(best[0])
     # WHERE THE ROW GOES. The controls give the column -- the left-most icon on the deepest rung
     # -- UNLESS the panel already draws this very plate on that rung, in which case it has said
     # exactly where a plate of this face belongs and that position is cloned instead. KQ6 draws
@@ -1888,18 +1991,40 @@ def _install_panel_chooser(src_dir, g, cfg=None):
     # machines and a narrow one for slow -- and growing only the first would clip the new row in
     # whichever the player is running; and a window can set its own height inside `open`
     # (`(= bottom ..)`) instead of taking it as a `bottom:` send, which is how LB2 writes it.
+    #
+    # ⭐ ...BY A PITCH, OR BY WHAT THE ROW ACTUALLY NEEDS -- whichever is more. A pitch is the
+    # natural growth, and it is enough while the thing being added is no taller than a rung. The
+    # plates are not: KQ6's is 22 against a pitch of 20 and LB2's is 23, so each hangs past its
+    # own row. KQ6 had slack to absorb it; LB2 did not, and its plate lost its bottom bevel to
+    # the window edge (seen in the running game before this existed). So MEASURE the window --
+    # `bottom - top`, evaluated out of the game's own art -- and grow by whatever puts the new
+    # row inside it. A window whose rect is not constant (KQ5 sizes its two by print language)
+    # cannot be measured, and there a pitch is what can be justified; KQ5's plate is 16 against
+    # a pitch of 20, so it needs nothing more.
+    def _cel(v, lp, c):
+        cc = loops[lp]["cels"][c]
+        return cc.width, cc.height
+
+    grow = pitch
+    new_bottom = _const_eval((read_all(ns_top) or [None])[0], _cel) if ns_top else None
+    if new_bottom is not None:
+        for bset in re.finditer(r"(?:\n\s*bottom:|\(=\s+bottom\b)", text):
+            hi = _rect_value(text, "bottom", bset.start(), _cel)
+            lo = _rect_value(text, "top", bset.start(), _cel)
+            if hi is not None and lo is not None:
+                grow = max(grow, new_bottom + plate_h - (hi - lo))
     grew = framed = 0
     for bset in list(re.finditer(r"(?:\n\s*bottom:|\(=\s+bottom\b)\s*", text)):
         rest = text[bset.end():]
         if rest.lstrip()[:1] == "(":
             off = bset.end() + (len(rest) - len(rest.lstrip()))
             bend = _balanced_span(text, off)
-            edits.append((off, bend, "(+ " + text[off:bend] + " %d)" % pitch))
+            edits.append((off, bend, "(+ " + text[off:bend] + " %d)" % grow))
             grew += 1
         # ...AND A WINDOW THAT DRAWS ITS OWN FRAME MUST TAKE THE FRAME WITH IT (`_frame_edges`).
         # Refusing is the right answer where the frame cannot be read: shipping a chooser that
         # breaks the panel it lives in is worse than shipping no chooser.
-        frame = _frame_edges(text, bset.start(), pitch)
+        frame = _frame_edges(text, bset.start(), grow)
         if frame is None:
             return {"applied": False, "ui": "panel", "title": host[:-3],
                     "why": "the panel's window computes its own rect and then draws its frame at "
@@ -2043,7 +2168,7 @@ def _install_panel_chooser(src_dir, g, cfg=None):
     text = text + inst
     open(os.path.join(src_dir, host), "w").write(text)
     return {"applied": True, "ui": "panel", "title": host[:-3], "row_pitch": pitch,
-            "window_grown": grew, "frame_edges_moved": framed, "face_view": view_num,
+            "window_grown": grew, "grow_px": grow, "frame_edges_moved": framed, "face_view": view_num,
             "face": "%s/%s/%s (blank %dx%d plate + Display label, %s)"
                     % (view, loop, cel, plate_w, plate_h,
                        "2 lines" if two_line else ("1 line with the mode" if one_line_mode

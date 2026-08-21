@@ -487,6 +487,31 @@ def decode_view(game: Sci0Game, view_num: int):
     return loops
 
 
+def view_palette(game, view_num):
+    """{index: (r, g, b)} for a view's EMBEDDED palette, or {} where it carries none.
+
+    Written because "can this text be read on that plate?" is a question about COLOURS, and two
+    different palette INDICES can be the same colour: KQ5's control panel writes its text in
+    index 0 and the plate the guard chooser borrows has an interior of index 254, and both are
+    (0, 0, 0). Black on black -- the label drew and could not be seen (measured on the running
+    game, 2026-08-21).
+
+    Only SCI1 VGA views carry one: byte 1 is 128, and the word at offset 6 points at a 1284-byte
+    blob -- a 256-byte index mapping, a 4-byte stamp, then 256 `(used, r, g, b)` quads, the same
+    shape `_render` skips over as pic opcode `fe 02`. SCI0's palette is the fixed EGA table and
+    SCI1.1 keeps its palettes in resources of their own, so both return {} and a caller with no
+    colours to compare must keep whatever the game itself chose."""
+    d = game.get(VIEW, view_num)
+    if not _is_vga_view(d):
+        return {}
+    off = _u16(d, 6)
+    if not off or off + 1284 > len(d):
+        return {}
+    base = off + 256 + 4
+    return {i: (d[base + i * 4 + 1], d[base + i * 4 + 2], d[base + i * 4 + 3])
+            for i in range(256)}
+
+
 def decode_font(game, font_num):
     """{'height': int, 'widths': {charcode: px}} for an SCI font resource.
 
