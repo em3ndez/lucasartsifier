@@ -400,12 +400,57 @@ def _decode_cel_sci11(d, off, celSize):
     return c
 
 
+def _decode_cel_vga1(d, off):
+    """One SCI1 *VGA* cel: SCI0's 8-byte descriptor, SCI1's byte-run pixel stream.
+
+    THE THIRD FORMAT, and the one this file used to mis-read. SCI1 kept SCI0's loop/cel offset
+    tables (so `decode_view`'s header walk already works) but replaced the 4-bit `run<<4|colour`
+    nibble stream with the byte-run scheme SCI1.1 also uses -- `run = b & 0x3F` with `b & 0xC0`
+    selecting copy / fill / skip -- because a 256-colour cel cannot spell its colours in a nibble.
+    Read through the EGA decoder, KQ5's panel art came back as structured noise: the sizes were
+    right (they are in the descriptor, which did not change) and the pixels were not, so every
+    question asked of the pixels got a confident wrong answer and nothing threw.
+
+    Told apart the way ScummVM tells it apart (`detectViewType`): byte 1 of a view resource is
+    128 on VGA and 0 on EGA. Structural, not declared -- no game needs an entry anywhere."""
+    c = Cel()
+    c.width, c.height = _u16(d, off), _u16(d, off + 2)
+    c.dx = d[off + 4] - 256 if d[off + 4] >= 128 else d[off + 4]      # signed
+    c.dy = d[off + 5]
+    c.clearKey = d[off + 6]
+    n = c.width * c.height
+    pix = bytearray([c.clearKey]) * n
+    p, i = off + 8, 0
+    while i < n and p < len(d):
+        b = d[p]; p += 1
+        run = b & 0x3F
+        kind = b & 0xC0
+        if kind == 0x00:                 # copy `run` literal pixels
+            take = min(run, n - i)
+            pix[i:i + take] = bytes(d[p:p + take])
+            p += run
+        elif kind == 0x80:               # fill `run` pixels with one colour
+            col = d[p]; p += 1
+            for k in range(i, min(i + run, n)):
+                pix[k] = col
+        # 0x40 is unused in SCI1; 0xC0 = skip, leaving the clear colour already in place
+        i += run
+    c.pix = pix
+    return c
+
+
+def _is_vga_view(d):
+    """SCI1 VGA vs SCI0 EGA, by ScummVM's own recogniser: byte 1 is 128 on VGA, 0 on EGA."""
+    return len(d) > 1 and d[1] == 0x80
+
+
 def decode_view(game: Sci0Game, view_num: int):
     """Return list of loops; each loop is a dict {cels: [Cel], mirror: bool}.
 
-    Two resource layouts, recognised (see `_is_sci11_view`) rather than declared. SCI1.1 replaced
-    SCI0's offset tables with fixed-stride loop and cel records whose strides are in the header,
-    and its cels carry two data streams instead of one nibble-RLE stream."""
+    THREE resource layouts, recognised (see `_is_sci11_view` / `_is_vga_view`) rather than
+    declared. SCI1.1 replaced SCI0's offset tables with fixed-stride loop and cel records whose
+    strides are in the header, and its cels carry two data streams instead of one nibble-RLE
+    stream. SCI1 sits between them: SCI0's tables, SCI1.1's byte-run pixels."""
     d = game.get(VIEW, view_num)
     if _is_sci11_view(d):
         headerSize = _u16(d, 0) + 2
@@ -429,6 +474,7 @@ def decode_view(game: Sci0Game, view_num: int):
         return loops
     loopCount = d[0]
     mirrorBits = d[2] | (d[3] << 8)
+    cel_of = _decode_cel_vga1 if _is_vga_view(d) else _decode_cel
     loops = []
     for L in range(loopCount):
         loopOff = d[8 + L * 2] | (d[8 + L * 2 + 1] << 8)
@@ -436,7 +482,7 @@ def decode_view(game: Sci0Game, view_num: int):
         cels = []
         for cn in range(celCount):
             co = d[loopOff + 4 + cn * 2] | (d[loopOff + 4 + cn * 2 + 1] << 8)
-            cels.append(_decode_cel(d, co))
+            cels.append(cel_of(d, co))
         loops.append({"cels": cels, "mirror": bool((mirrorBits >> L) & 1)})
     return loops
 

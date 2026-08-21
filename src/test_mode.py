@@ -130,23 +130,43 @@ def test_ui_installers():
     # placed by EXCLUDING the device menus (sound/speed/file, identified by what their handler
     # cases call), not by naming one, after the user rejected the Sound menu it used to append
     # to. LSL2's Action has 7 items (separators count) so ours is 8 -> 776; KQ4's has 3 -> 772.
-    cases = [("lsl2", "../build/ir/src/Menu.sc", "(proc255_0 {%s})", "menu", 776),
-             ("kq4", "../build/kq4/src/Menu.sc", "(proc255_0 {%s})", "menu", 772),
-             ("kq6", "../build/sweep/kq6/src/kq6Controls.sc", "(proc921_0 {%s})", "panel", None)]
+    #
+    # ⭐ EVERY GAME WITH A SETTINGS SURFACE IS A CASE (2026-08-21). KQ5 and LB2 shipped with NO
+    # picker -- the mode retracted itself because neither panel matched the ONE spelling the
+    # SCI1.1 installer knew (KQ6's). Both games DO have the construct; they spell it differently
+    # (KQ5 declares its panel as a `class` with two instances and hangs its row constants off an
+    # unparenthesised `if`; LB2 writes its rows as literal `nsTop` properties). A case per game
+    # is what keeps a spelling census honest -- see [[kq5-polygon-instance-spelling]].
+    #
+    # ⛔ AND EACH CASE IS THE GAME'S WHOLE SOURCE TREE, not the one file the chooser edits. Both
+    # installers read the DIRECTORY -- which file holds the menu bar, which holds the settings
+    # panel (a game can have two `of GameControls`), what the icon class's press and dismiss bits
+    # are, whether the game's vocabulary has `addButton:` at all, what number a font global
+    # resolves to. A case that stages three hand-picked files measures a project no game has, and
+    # every one of those derivations would answer differently here than in the pipeline.
+    cases = [("lsl2", "LSL2", "../build/ir/src", "Menu.sc", "(proc255_0 {%s})", "menu", 776),
+             ("kq4", "KQ4", "../build/kq4/src", "Menu.sc", "(proc255_0 {%s})", "menu", 772),
+             ("kq6", "KQ6", "../build/sweep/kq6/src", "kq6Controls.sc",
+              "(proc921_0 {%s})", "panel", None),
+             ("dagger", "dagger", "../build/sweep/dagger/src", "lb2GameControls.sc",
+              "(proc255_0 {%s})", "panel", None),
+             ("kq5", "kq5", "../build/sweep/kq5/src", "slowControls.sc",
+              "(proc255_0 {%s})", "panel", None)]
     here = os.path.dirname(os.path.abspath(__file__))
-    for game, rel, form, want_ui, want_code in cases:
-        src = os.path.normpath(os.path.join(here, rel))
-        if not os.path.exists(src):
-            print("  [skip] %s source not present (%s)" % (game, src))
+    for game, cfg_name, rel, edits, form, want_ui, want_code in cases:
+        tree = os.path.normpath(os.path.join(here, rel))
+        if not os.path.exists(os.path.join(tree, edits)):
+            print("  [skip] %s source not present (%s)" % (game, os.path.join(tree, edits)))
             continue
+        src = os.path.join(tree, edits)
         d = os.path.join(scratch, game, "src")
         shutil.rmtree(os.path.join(scratch, game), ignore_errors=True)
-        os.makedirs(d)
-        shutil.copy(src, d)
+        shutil.copytree(tree, d, ignore=shutil.ignore_patterns("*.json"))
         P._RETRACTION_FORM = form
+        import config as _cfgmod
         row = P._install_menu_chooser(d, 481)
         if row is None:
-            row = P._install_panel_chooser(d, 481)
+            row = P._install_panel_chooser(d, 481, cfg=_cfgmod.by_name(cfg_name))
         ok = row is not None and row.get("applied") and row.get("ui") == want_ui
         if want_code is not None:
             ok = ok and row.get("menu_code") == want_code
@@ -166,6 +186,22 @@ def test_ui_installers():
             check("%s chooser shows the current level" % game,
                   _names_all(edited, "now: %s"), edited[:0])
             body = edited[edited.find("instance iconGuards"):]
+            # ⭐ THE CONTROL MUST READ AS ONE OF THE PANEL'S OWN. Its face is a cel of the SAME
+            # view the panel's controls use, spelled the way the panel spells it -- a literal
+            # `view N` where the siblings carry one (KQ6, LB2), and the sibling's own runtime
+            # assignment where they do not (KQ5 picks its view by language: `(= view
+            # (localproc_1))`). An icon that hard-codes 946 there is an icon that shows English
+            # art in the German build, so what is pinned is that the control names the view the
+            # SAME WAY a sibling does, not that it names a number.
+            sib_view = re.search(r"\(instance\s+\w+\s+of\s+ControlIcon\b[^\0]*?"
+                                 r"(?:\bview\s+(\d+)\b|\(=\s*view\s+(\([^\n]*\))\))",
+                                 edited[:edited.find("instance iconGuards")])
+            spelling = (sib_view.group(1) or sib_view.group(2)) if sib_view else None
+            check("%s control names its view the way the panel's own controls do" % game,
+                  spelling is not None
+                  and (re.search(r"\bview\s+%s\b" % re.escape(spelling), body)
+                       or ("(= view %s)" % spelling) in body),
+                  "siblings spell it %r; control body: %s" % (spelling, body[:300]))
             # ⭐ IT MUST NOT ASK FOR A PRESS ANIMATION IT HAS NO ART FOR. `IconI::select` draws
             # cel 1 of the icon's own loop while the mouse is held and cel 0 on release -- the
             # SCI convention that a control's loop is a two-cel {up, down} pair. Our face is
@@ -175,33 +211,49 @@ def test_ui_installers():
             # the strip and the inset are exactly what three play reports described. The
             # REQUIREMENT is "no animation without a pair", so that is what this pins -- against
             # the game's own art and the game's own class constant, not against a signal number.
-            face = re.search(r"view\s+(\d+)\s+loop\s+(\d+)\s+cel\s+(\d+)\s+signal\s+(\d+)",
+            face = re.search(r"loop\s+(\d+)\s+cel\s+(\d+)\s+signal\s+(\d+)",
                              re.sub(r"\s+", " ", body))
             check("%s control declares a face and a signal" % game, bool(face), body[:400])
             if face:
-                v, lp, cl, sig = (int(face.group(i)) for i in (1, 2, 3, 4))
+                lp, cl, sig = (int(face.group(i)) for i in (1, 2, 3))
+                v = row.get("face_view")
+                check("%s installer reports the view number it measured the art at" % game,
+                      isinstance(v, int), repr(row))
                 # read the art -- and say so LOUDLY if it cannot be read, because "no pair" is
                 # also this check's pass-by-default and a silent fallback would pin nothing
                 import config, sci_gfx, sci_resource
-                cels = sci_gfx.decode_view(
-                    sci_resource.Sci0Game(config.KQ6.resource_dir), v)[lp]["cels"]
+                gm = sci_resource.Sci0Game(config.by_name(cfg_name).resource_dir)
+                loops = sci_gfx.decode_view(gm, v)
+                cels = loops[lp]["cels"]
                 pair = (cl == 0 and len(cels) > 1
                         and (cels[0].width, cels[0].height) == (cels[1].width, cels[1].height))
                 bit = P._icon_press_bit(d)
                 check("%s control animates its press only if its face is a two-cel button pair"
                       % game, pair or not (sig & bit),
                       "signal %d, press bit %#x, face %d/%d/%d pair=%s" % (sig, bit, v, lp, cl, pair))
-                # the sibling half: the check is only meaningful if the panel's REAL buttons do
-                # read as pairs, so the art reader is not simply always saying no
+                # ⭐ AND THE FACE MUST CARRY NO WORD OF ITS OWN. Every button face in these panels
+                # has one baked into the art (SAVE / RESTORE / QUIT ...), so borrowing one ships a
+                # control that lies about what it does -- the v26 build grew a second "SAVE". A
+                # PLATE is recognised by having no interior detail at all: inset past the bevel
+                # and every remaining pixel is one colour. Asserted on the art, so a face chosen
+                # by any future rule still has to be blank.
+                check("%s the control's face is a BLANK plate, not a lettered button" % game,
+                      P._is_blank_cel(cels[cl]),
+                      "face %d/%d/%d is %dx%d" % (v, lp, cl, cels[cl].width, cels[cl].height))
+                # the sibling half: the checks above are only meaningful if the panel's REAL
+                # buttons read as lettered pairs, so the art reader is not simply always saying no
                 sibs = [(int(m.group(1)), int(m.group(2))) for m in
-                        re.finditer(r"view\s+(\d+)\s+loop\s+(\d+)\s+cel\s+0\s+message\s+0\s+signal",
-                                    re.sub(r"\s+", " ", edited))]
-                pairs = [(sv, sl) for sv, sl in sibs
-                         if len(sib := sci_gfx.decode_view(
-                             sci_resource.Sci0Game(config.KQ6.resource_dir), sv)[sl]["cels"]) > 1
-                         and (sib[0].width, sib[0].height) == (sib[1].width, sib[1].height)]
-                check("%s the pair test recognises the panel's own buttons" % game,
-                      len(pairs) >= 3, "button faces %s read as pairs: %s" % (sibs, pairs))
+                        re.finditer(r"\(instance\s+\w+\s+of\s+(?:ControlIcon|IconI)\b\s*"
+                                    r"\(properties\s*(?:name\s+\S+\s*)?"
+                                    r"(?:view\s+\d+\s*)?loop\s+(\d+)\s+cel\s+(\d+)\b",
+                                    re.sub(r"[ \t]+", " ", edited))]
+                pairs = [(sl, sc) for sl, sc in sibs
+                         if sl < len(loops) and len(sib := loops[sl]["cels"]) > 1
+                         and (sib[0].width, sib[0].height) == (sib[1].width, sib[1].height)
+                         and not P._is_blank_cel(sib[sc])]
+                check("%s the pair test recognises the panel's own lettered buttons" % game,
+                      len(pairs) >= 3, "sibling faces %s read as lettered pairs: %s"
+                                       % (sibs, pairs))
             # ...AND IT MUST HIDE THE PANEL BEFORE OPENING THE CHOOSER, AND RETURN TRUE.
             # `iconAbout`, in the same file, opens a dialog from this same panel correctly:
             # `(super select: &rest) (global63 hide:) (KQ6Print ... init:)`. Two orderings matter
@@ -212,18 +264,32 @@ def test_ui_installers():
             # over a window it has just disposed. The requirement is the ORDER and the RETURN,
             # so that is what this pins -- not "no dialog", which is what the first cut of this
             # check asserted and which cost the UI the user preferred.
-            hide, printed = body.find("hide:"), body.find("Print")
+            #
+            # ⛔ THE CHOOSER IS NOT ALWAYS A `Print` (2026-08-21). KQ5 is SCI1: it has no
+            # `addButton:` selector anywhere in the game, and its own About control asks with
+            # `(proc255_0 <text> 81 {label} value ...)` -- the SCI0/SCI1 button-dialog idiom the
+            # MENU chooser already emits. So the dialog form is derived from the game's
+            # vocabulary, and what these checks look for is THE CHOOSER, spelled as the first
+            # mode button label, not the word `Print`.
+            ask = body.find(P._mode_button(0))
+            hide = body.find("hide:")
+            check("%s opens a chooser at all" % game, ask >= 0, body[:500])
             check("%s hides the panel before opening the chooser" % game,
-                  printed < 0 or (0 <= hide < printed), body[:500])
+                  ask < 0 or (0 <= hide < ask), body[:500])
             sel = body[body.find("(method (select"):]
             check("%s chooser select returns true so the panel's modal loop exits" % game,
-                  printed < 0 or "(return 1)" in sel, sel[:400])
+                  ask < 0 or "(return 1)" in sel, sel[:400])
             # and it must never re-enter the panel's own modal loop: `(<panel> show:)` from
             # inside a control runs `GameControls::show` a second time from within itself, so
             # dismissing only ever returns to the outer loop (v29: the panel never closed).
-            panel_inst = re.search(r"\(instance\s+(\w+)\s+of\s+GameControls\b", edited)
+            # ⛔ BY THE PANEL'S OWN NAMES, BOTH OF THEM: KQ5 declares its panel as a `class` with
+            # two instances and reaches it through the global it parks itself in, so a check that
+            # only knew `(instance X of GameControls)` asked nothing there.
+            names = set(re.findall(r"\((?:instance|class)\s+(\w+)\s+of\s+GameControls\b", edited))
+            names |= set(re.findall(r"\(=\s*(global\d+)\s+self\)", edited))
             check("%s control never re-shows the panel from inside it" % game,
-                  not panel_inst or ("(%s show:)" % panel_inst.group(1)) not in body, body[:500])
+                  names and not any(("(%s show:)" % n) in body for n in names),
+                  "panel names %s; body: %s" % (sorted(names), body[:400]))
         if want_ui == "menu":
             # ...and it must not land on the audio menu
             host = re.search(r"\(AddMenu\s+\{([^}]*)\}\s+\{[^}]*Guards", edited)

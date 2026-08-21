@@ -179,6 +179,12 @@ def assemble(dest, cfg=None):
         if _is_loose_patch(fn):
             shutil.copy(os.path.join(cfg.resource_dir, fn), os.path.join(dest, fn))
     _SCHEME = _patch_scheme(cfg)
+    # ⛔ THE GAME BEING PATCHED, not the one that happens to be `config.ACTIVE`. The panel
+    # chooser measures the game's own panel art and font (`_install_panel_chooser`), and it used
+    # to read them out of `config.ACTIVE.resource_dir` -- which the emitted-bytes harness never
+    # sets, so every game's art was looked up in LSL2's resources and the failure was swallowed
+    # by a bare `except` into the constants measured on KQ6.
+    globals()["_GAME_CFG"] = cfg
     globals()["_PRISTINE_DIR"] = src      # stage extraction must read UNEDITED source: an
     #   earlier wrap in the same file shifts the clause and the extracted "test" can be our
     #   own guard text (the rm390 compile break, 2026-08-04)
@@ -1396,16 +1402,38 @@ def _icon_press_bit(src_dir):
     return int(m.group(1), 16) if m else 1
 
 
-def _dialog_icon(text):
-    """The panel's OWN control that opens a dialog: a `select` that hides the panel, then prints.
+def _dismiss_bit(src_dir):
+    """The signal bit that makes clicking a control CLOSE the panel, read out of the icon class.
 
-    Returns (name, signal). That signal is the one to clone for a chooser, because opening a
-    dialog from inside the panel is not a free-standing act: the panel is a modal running its own
-    event loop, and only an icon whose signal carries the "dismiss" bit makes that loop exit
-    (`IconBar::dispatchEvent` sets its exit flag from `(& signal $0040)`). Cloning the icon that
-    already does it correctly takes that bit, and the panel's own "I position myself" and "the
-    arrow keys reach me" bits, without this code having to know which is which.
-    """
+    `ControlIcon` hides the panel before running the control's action, but only for an icon whose
+    signal carries this bit -- and `IconBar::dispatchEvent` reads the same bit for the exit flag
+    of its modal loop, so a chooser without it opens its dialog over a window that never goes
+    away. The bit is a class constant; read it off the condition that guards the class's own
+    `hide:` rather than naming it."""
+    m = re.search(r"\(if\s*\(&\s*signal\s*\$([0-9a-fA-F]+)\s*\)\s*\n[^\n]*hide:",
+                  _all_sources(src_dir))
+    return int(m.group(1), 16) if m else 0x40
+
+
+def _dialog_icon(text, src_dir=None):
+    """The panel's OWN control that opens a dialog, as (name, signal) -- the signal to clone.
+
+    Opening a dialog from inside the panel is not a free-standing act: the panel is a modal
+    running its own event loop, and only an icon whose signal carries the "dismiss" bit makes
+    that loop exit (`IconBar::dispatchEvent` sets its exit flag from `(& signal $0040)`). Cloning
+    an icon that already does it correctly takes that bit, and the panel's own "I position
+    myself" and "the arrow keys reach me" bits, without this code having to know which is which.
+
+    TWO SPELLINGS of "this control opens a dialog", because a panel can put the body either in
+    the icon or behind the icon:
+      * IN the icon -- a `select` that hides the panel and prints (KQ6's `iconAbout`).
+      * BEHIND it -- `theObj:`/`selector:`, where `ControlIcon` itself does the hiding under the
+        dismiss bit and forwards the send (KQ5 and LB2 both write About that way, so the first
+        rule found nothing in either and the games' choosers were skipped for want of a signal).
+        A delegating icon opens a dialog exactly when it carries the dismiss bit -- that bit is
+        what makes the panel go away first, and a control that closes the panel to do its work
+        IS the shape we are cloning. Among those, prefer the one carrying the FEWEST other bits:
+        the extra bits are per-control decoration and the chooser wants the plain dialog shape."""
     found = None
     for m in re.finditer(r"\(instance\s+(\w+)\s+of\s+\w+", text):
         body = text[m.start():_balanced_span(text, m.start())]
@@ -1418,47 +1446,244 @@ def _dialog_icon(text):
         g = re.search(r"\bsignal\s+(\d+)", body)
         if g:
             found = (m.group(1), int(g.group(1)))
-    return found
+    if found or src_dir is None:
+        return found
+    bit = _dismiss_bit(src_dir)
+    cands = []
+    for i, m in enumerate(re.finditer(r"\((?:instance|class)\s+(\w+)\s+of\s+ControlIcon\b", text)):
+        body = text[m.start():_balanced_span(text, m.start())]
+        sg = re.search(r"\bsignal\s+(\d+)", body)
+        if not sg or not (int(sg.group(1)) & bit):
+            continue
+        # is it actually WIRED to something? the add: list entry is a balanced form, so the span
+        # is walked rather than matched with `[^)]*` -- KQ5 writes `(iconAbout init: theObj:
+        # (ScriptID 756 0) selector: #doit yourself:)`, whose nested form ends a `[^)]*` scan
+        # three selectors early and hid the panel's own About control from this scan
+        am = re.search(r"\(%s\b" % re.escape(m.group(1)), text)
+        if am and "selector:" in text[am.start():_balanced_span(text, am.start())]:
+            cands.append((bin(int(sg.group(1))).count("1"), i, m.group(1), int(sg.group(1))))
+    return (cands[0][2], cands[0][3]) if (cands := sorted(cands)) else None
 
 
-def _install_panel_chooser(src_dir, g):
-    """The SCI1.1 half of `install_mode_ui`. Returns an edit row, or None if no panel."""
-    host, text, panel = None, None, None
+def _is_blank_cel(cel, inset=3):
+    """A cel carrying NO interior detail -- the only face a run-time label may be written onto.
+
+    Every button face in these panels has a WORD baked into its art (SAVE / RESTORE / QUIT), so
+    borrowing one ships a control that lies about what it does: the v26 KQ6 build grew a second
+    "SAVE". What the art always also carries is a blank PLATE -- the inset a panel draws behind a
+    run-time readout -- and it is recognised by what makes it blank: inset past the bevel, every
+    remaining pixel is one colour. Asked of the ART, so it needs to know nothing about which loop
+    the plate lives in; the rule it replaces (a DrawCel positioned at the deepest control row)
+    knew exactly that, and only KQ6 satisfied it."""
+    if cel.width <= 2 * inset or cel.height <= 2 * inset:
+        return False
+    first = cel.pix[inset * cel.width + inset]
+    for y in range(inset, cel.height - inset):
+        base = y * cel.width
+        if any(v != first for v in cel.pix[base + inset:base + cel.width - inset]):
+            return False
+    return True
+
+
+def _panel_host(src_dir):
+    """(filename, text, panel receiver, body span) for the game's SETTINGS panel, or four Nones.
+
+    TWO SPELLINGS of the same construct. KQ6 and LB2 declare an `(instance X of GameControls)`;
+    KQ5 declares a `(class KQ5Controls of GameControls)` and instantiates it TWICE -- one window
+    for fast machines and one for slow -- so its icon list lives in the class, and a rule that
+    only knew `instance` found nothing. That is the whole reason KQ5 shipped with no picker.
+
+    And a game can hold SEVERAL GameControls: KQ5's save-game selector (`SaveIcon.sc`) is one
+    too, with its own add: list of file slots. The settings panel is the one that PARKS ITSELF IN
+    A GLOBAL -- `(= globalN self)` -- because that global is how `ControlIcon` reaches the panel
+    to hide it before a dialog opens. So the discriminator is the very fact the emitted control
+    depends on, rather than a name or a file."""
     for fn in sorted(os.listdir(src_dir)):
-        if fn.endswith(".sc"):
-            t = open(os.path.join(src_dir, fn), errors="replace").read()
-            m = re.search(r"\(instance\s+(\w+)\s+of\s+GameControls\b", t)
-            if m:
-                host, text, panel = fn, t, m.group(1)
-                break
+        if not fn.endswith(".sc"):
+            continue
+        t = open(os.path.join(src_dir, fn), errors="replace").read()
+        for m in re.finditer(r"\((?:instance|class)\s+(\w+)\s+of\s+GameControls\b", t):
+            end = _balanced_span(t, m.start())
+            body = t[m.start():end]
+            pg = re.search(r"\(=\s*(global\d+)\s+self\)", body)
+            if pg and re.search(r"\badd:", body):
+                return fn, t, pg.group(1), (m.start(), end)
+    return None, None, None, None
+
+
+def _panel_controls(text):
+    """The panel's own control icons: [{name, body, left, top, rung}], in source order.
+
+    `left`/`top` are the SOURCE SPELLINGS of nsLeft/nsTop -- a literal where the panel writes one
+    and the game's own expression where it computes one -- because a chooser row has to be placed
+    the way its neighbours are placed. `rung` is the row constant that expression (or literal)
+    carries, which is what the ladder pitch is measured from."""
+    out = []
+    for m in re.finditer(r"\((?:instance|class)\s+(\w+)\s+of\s+(?:ControlIcon|IconI)\b", text):
+        body = text[m.start():_balanced_span(text, m.start())]
+        rung = None
+        pm = re.search(r"\(properties\b", body)
+        props = body[pm.start():_balanced_span(body, pm.start())] if pm else ""
+        lv = re.search(r"\bnsLeft\s+(-?\d+)", props)
+        tv = re.search(r"\bnsTop\s+(-?\d+)", props)
+        left = lv.group(1) if lv else None
+        top = tv.group(1) if tv else None
+        if top is not None:
+            rung = (int(top), int(top))
+        for sel, store in (("nsLeft", "left"), ("nsTop", "top")):
+            am = re.search(r"\(=\s+%s\s+" % sel, body)
+            if not am:
+                continue
+            j = am.end()
+            while j < len(body) and body[j] in " \t\r\n":
+                j += 1
+            expr = (body[j:_balanced_span(body, j)] if body[j] == "("
+                    else re.match(r"-?\d+", body[j:]).group(0))
+            if store == "left":
+                left = expr
+            else:
+                top = expr
+                im = re.search(r"\(if\b.*?\s(\d+)\s+else\s+(\d+)\s*\)", " ".join(expr.split()))
+                rung = (int(im.group(1)), int(im.group(2))) if im else \
+                    ((int(expr), int(expr)) if expr.lstrip("-").isdigit() else None)
+        if rung is not None:
+            out.append({"name": m.group(1), "body": body, "left": left, "top": top, "rung": rung})
+    return out
+
+
+def _panel_view(text):
+    """(view number, source spelling) for the art the panel's own controls draw their faces from.
+
+    KQ6 and LB2 write the number into every control's properties. KQ5 does not have one to write:
+    its panel art is per-LANGUAGE (`(= view (localproc_1))` picks between five view numbers off
+    `printLang`), so the number exists only at run time and the source carries an expression. The
+    NUMBER is still needed here -- the art has to be measured -- and the panel hands it over
+    itself, in the `(Load 128 N)` that preloads its own view. Emit the SPELLING, measure the
+    NUMBER: an icon that hard-codes 946 is an icon showing English art in the German build."""
+    for m in re.finditer(r"\((?:instance|class)\s+\w+\s+of\s+(?:ControlIcon|IconI)\b", text):
+        body = text[m.start():_balanced_span(text, m.start())]
+        pm = re.search(r"\(properties\b", body)
+        props = body[pm.start():_balanced_span(body, pm.start())] if pm else ""
+        v = re.search(r"\bview\s+(\d+)", props)
+        if v:
+            return int(v.group(1)), v.group(1)
+    a = re.search(r"\(=\s*view\s+(\([^\n]*?\))\s*\)", text)
+    ld = re.search(r"\(Load\s+128\s+(\d+)\s*\)", text)
+    if a and ld:
+        return int(ld.group(1)), a.group(1)
+    return None, None
+
+
+def _frame_edges(text, at, pitch):
+    """Splices that take a self-drawn window frame's BOTTOM EDGE down by `pitch`.
+
+    `[]` when the window draws no such frame -- the ordinary case, where the frame comes out of
+    `(super open:)` and follows whatever rect the window holds. A list of splices when it does
+    draw one. `None` when it draws one this cannot read, which the caller must treat as a refusal
+    rather than a licence to grow the rect and leave the border behind.
+
+    LB2 is the case: `gcWin::open` computes its own top/left/bottom/right and then draws twelve
+    `Graph` line calls at LITERAL screen coordinates equal to the rect it just computed. Grow the
+    rect alone and the fill reaches a pitch below a border that stayed put.
+
+    WHICH literals are the bottom edge is read off the literals themselves. A rectangular bevel's
+    line endpoints fall into two clusters, one per horizontal edge, separated by the window's
+    height -- an order of magnitude more than the bevel's own thickness. Split at the largest gap
+    and raise the upper cluster; if the gap is not bigger than the spread within either cluster,
+    the frame is not a plain rectangle and this says so instead of guessing.
+
+    Scoped to the METHOD that assigns the rect, which is the only place the correlation holds: a
+    window sent its rect from outside (KQ5, KQ6) does not draw one of these at all."""
+    # ⛔ `code_finditer`, NOT `re.finditer`. `(method (` is the ONE pattern this corpus writes
+    # inside a message string -- `WriteFeature.sc` GENERATES SCI source -- so a raw scan can pick
+    # a "method" that is text in a string and hand back a span that is not code
+    # ([[writefeature-is-a-source-generator]]; `test_patch_text` fails the build over it).
+    ms = None
+    for m in code_finditer(text[:at], r"\(method\s+\("):
+        if _balanced_span(text, m.start()) > at:
+            ms = m.start()
+    if ms is None:
+        return []
+    me = _balanced_span(text, ms)
+    pts = []
+    for gm in re.finditer(r"\(\s*Graph\s+\d+", text[ms:me]):
+        s = ms + gm.start()
+        body = text[s:_balanced_span(text, s)]
+        head = re.match(r"\(\s*Graph\s+\d+", body)
+        nums = list(re.finditer(r"-?\d+", body))
+        if len(nums) < 5:
+            continue
+        coords = nums[1:5]
+        # the four coordinates must be the tokens IMMEDIATELY after the subfunction: a call whose
+        # rect comes from the window's own properties (`(Graph 11 top left bottom right ..)`)
+        # already follows the rect and must not be touched
+        if not re.fullmatch(r"[\s0-9-]*", body[head.end():coords[3].end()]):
+            continue
+        for i in (0, 2):                    # a line is (y1 x1 y2 x2 ..): the y's are the edges
+            pts.append((int(coords[i].group(0)),
+                        s + coords[i].start(), s + coords[i].end()))
+    if not pts:
+        return []
+    vals = sorted({v for v, _, _ in pts})
+    if len(vals) < 2:
+        return None
+    width, cut = max((b - a, i) for i, (a, b) in enumerate(zip(vals, vals[1:])))
+    lo, hi = vals[:cut + 1], vals[cut + 1:]
+    if width <= max(lo[-1] - lo[0], hi[-1] - hi[0]):
+        return None
+    return [(s0, s1, str(v + pitch)) for (v, s0, s1) in pts if v in set(hi)]
+
+
+def _bump_rung(spelling, rung, pitch):
+    """The same nsTop spelling, one row further down: both row constants raised by the pitch."""
+    x, y = rung
+    if spelling.lstrip("-").isdigit():
+        return str(x + pitch)
+    return re.sub(r"(\(if\b.*?\s)%d(\s+else\s+)%d(\s*\))" % (x, y),
+                  lambda m: "%s%d%s%d%s" % (m.group(1), x + pitch, m.group(2), y + pitch,
+                                            m.group(3)),
+                  spelling, count=1)
+
+
+def _install_panel_chooser(src_dir, g, cfg=None):
+    """The SCI1/SCI1.1 half of `install_mode_ui`. Returns an edit row, or None if no panel."""
+    host, text, panel_global, hspan = _panel_host(src_dir)
     if host is None:
         return None
-    # THE GLOBAL THAT HOLDS THE PANEL, read from its own `(= globalN self)` -- the panel has to
-    # be hidden before a chooser opens over it (see the instance below), and `iconAbout` does
-    # that through this global rather than by naming the instance. Derived, not assumed: a game
-    # that keeps its panel somewhere else still gets the right receiver, and one that keeps it
-    # nowhere falls back to the instance name, which is in scope in the same file anyway.
-    pg = re.search(r"\(=\s*(global\d+)\s+self\)", text)
-    panel_global = pg.group(1) if pg else panel
-    # THE NEW ROW. The panel's rows are a ladder: each icon's `nsTop` is the same expression
-    # with one constant per row, and the PITCH is the gap between consecutive rungs (20 on
-    # KQ6). Derive the pitch from the ladder rather than assuming it, then hang the new row
-    # one pitch below the deepest one -- and grow the window by the same amount, or the icon
-    # lands outside the window and is clipped (the v26 bug, user screenshot 2026-08-06).
-    tops = re.findall(r"\(=\s+nsTop\s+(\(.*?\))\s*\)", text)
-    rows = [(int(m.group(1)), int(m.group(2)), t)
-            for t in tops
-            for m in [re.search(r"\(if [^)]*\)\s*(\d+)\s+else\s+(\d+)", t.replace("\n", " "))]
-            if m]
+    # THE NEW ROW. The panel's rows are a ladder: every icon's `nsTop` carries one constant per
+    # row, and the PITCH is the gap between consecutive rungs (20 on all three games). Derive the
+    # pitch from the ladder rather than assuming it, then hang the new row one pitch below the
+    # deepest -- and grow the window by the same amount, or the icon lands outside it and is
+    # clipped (the v26 bug, user screenshot 2026-08-06).
+    #
+    # ⭐ IN WHATEVER SPELLING THE PANEL USES. This used to read one shape only -- `(= nsTop (..
+    # X else Y ..))` -- with a non-greedy regex standing in for a balanced-paren walk. LB2 writes
+    # its rows as literal `nsTop` PROPERTIES, so it had no ladder at all; KQ5 writes the
+    # expression but hangs it off `(if global159 83 else 84)`, an unparenthesised condition, and
+    # puts a second `(..)` term in front of it -- so the shortest-match regex stopped at the
+    # wrong close paren and captured `(+ (- 3 (localproc_0 5 5 5 5 0)`, which carries no `if` and
+    # matched nothing. Both games were told they had no row idiom, and both do. `_panel_controls`
+    # reads the ladder off the CONTROLS, with `_balanced_span` doing the paren walk.
+    ctrls = _panel_controls(text)
+    rows = [c for c in ctrls if c["rung"]]
     if not rows:
         return {"applied": False, "ui": "panel", "title": host[:-3],
-                "why": "no `(= nsTop (.. X else Y ..))` row idiom to clone"}
-    ladder = sorted({r[0] for r in rows})
+                "why": "the panel's controls carry no row constant to measure a ladder from "
+                       "(no `nsTop` property and no `(= nsTop ..)` naming a row)"}
+    ladder = sorted({c["rung"][0] for c in rows})
     pitch = min((b - a for a, b in zip(ladder, ladder[1:])), default=20)
-    x, y, tmpl = max(rows)
-    ns_top = tmpl.replace(" %d " % x, " %d " % (x + pitch), 1)
-    ns_top = re.sub(r"else\s+%d\b" % y, "else %d" % (y + pitch), ns_top, count=1)
-    fm = re.search(r"font:\s*(global\d+|\d+)", text)
+    deepest = [c for c in rows if c["rung"][0] == ladder[-1]]
+    # among the icons sharing the deepest row, the LEFT-most: it is the one standing in the
+    # panel's own control column, and the new row belongs under that column
+    anchor = min(deepest, key=lambda c: int(c["left"]) if (c["left"] or "").lstrip("-").isdigit()
+                 else 1 << 30)
+    x, y = anchor["rung"]
+    ns_top = _bump_rung(anchor["top"], anchor["rung"], pitch)
+    deep_left = anchor["left"]
+    # THE FONT the label is written in: the one the host file names. Two spellings, because a
+    # `Display` names its font positionally (`105 <font>`) where a `Print` names it with a
+    # selector, and KQ5's panel only ever uses the former.
+    fm = re.search(r"font:\s*(global\d+|\d+)", text) or re.search(r"\b105\s+(global\d+|\d+)", text)
     font = fm.group(1) if fm else "0"
     # THE FACE, and why it is not a button cel. Every button face in a panel like this is a
     # WORD baked into the art (KQ6's view 947: SAVE/RESTORE/RESTART/QUIT/ABOUT/PLAY/SPEECH/
@@ -1468,69 +1693,135 @@ def _install_panel_chooser(src_dir, g):
     # `Display`, the same kernel the game uses for every other run-time string. Zero new art,
     # and the label says what the control is.
     #
-    # The plate is found by its y-expression carrying the DEEPEST row's constant (KQ6: the
-    # 58x22 inset under the text/speech switch); its own DrawCel arguments give view/loop/cel
-    # and x. Spans come from `_balanced_span`, not a nesting-depth regex: the y argument is
-    # three forms deep (`(+ 0 (if (== g 256) A else B) 7)`) and a hand-rolled pattern misses it.
-    plate = None
-    deep = re.compile(r"\b%d\b\s+else\s+\b%d\b" % (x, y))
-    for dm in re.finditer(r"\(\s*DrawCel\b", text):
-        d = text[dm.start():_balanced_span(text, dm.start())]
-        args = re.match(r"\(\s*DrawCel\s+(\d+)\s+(\d+)\s+(\d+)\s+(-?\d+)\s+(\(|-?\d)", d)
-        if not args or not deep.search(re.sub(r"\s+", " ", d)):
-            continue
-        ym = re.search(r"\(\s*DrawCel\s+\d+\s+\d+\s+\d+\s+-?\d+\s+", d)
-        yexpr = d[ym.end():_balanced_span(d, ym.end())] if d[ym.end()] == "(" else None
-        if yexpr is None:
-            continue
-        plate = {"view": args.group(1), "loop": args.group(2), "cel": args.group(3),
-                 "x": int(args.group(4)),
-                 "y": deep.sub("%d else %d" % (x + pitch, y + pitch), yexpr, count=1)}
-        break
-    if plate is None:
+    # ⭐ AND IT IS FOUND IN THE ART, NOT IN A DrawCel. The rule this replaces looked for a cel the
+    # panel DRAWS at the deepest control row, which is how KQ6's plate happens to be spelled (the
+    # 58x22 inset under the text/speech switch) and how neither of the other two is: LB2 draws its
+    # 58x23 plate beside a different control, and KQ5 never draws its 76x16 plate at all -- it is
+    # art the panel carries and does not use. What makes a plate a plate is that it is BLANK, so
+    # that is what is asked, of the pixels (`_is_blank_cel`). Among the blank cels, take one the
+    # label actually fits, preferring a two-line fit and then the smallest -- the tightest frame
+    # around the text rather than the panel's whole background inset.
+    view_num, view_spell = _panel_view(text)
+    if view_num is None:
         return {"applied": False, "ui": "panel", "title": host[:-3],
-                "why": "no blank inset cel is drawn behind the deepest control row, so there "
-                       "is no unlabelled face to host the chooser (every button face in the "
-                       "panel art carries a baked-in word)"}
-    view, loop, cel = plate["view"], plate["loop"], plate["cel"]
-    deep_left, ns_top = plate["x"], plate["y"]
+                "why": "the panel's controls name no view, so its art cannot be read"}
     # the label's colour: the panel's own highlight colour, as it sets it on every element
-    hm = re.search(r"eachElementDo:\s*#highlightColor\s+(\d+)", text)
+    hm = re.search(r"eachElementDo:\s*#highlightColor\s+(global\d+|\d+)", text)
     ink = hm.group(1) if hm else "0"
     # MEASURE the plate and the font, rather than assume they fit. Two UI defects came out of
     # assuming: v26 put a long sentence in a dialog and the wrap drew the buttons over the text,
-    # and the single-line label was sized by eye. A font is a resource like any other
-    # (`sci_gfx.decode_font`), so the label layout below is derived from real metrics --
-    # measured on KQ6: plate 58x22, font 4 is 9px tall, "GUARDS" 31px, "STOCK" 27px.
-    plate_w, plate_h, font_h = 58, 22, 9
-    # Is the face a BUTTON PAIR -- loop = {cel 0: up, cel 1: down}, the shape `IconI::select`
-    # assumes when it animates a press? Ours never is (see the signal below), but prove it from
-    # the art instead of asserting it, and default to "no" when the art cannot be read: the
-    # safe answer is the one that draws nothing extra.
-    face_is_button_pair = False
+    # and the single-line label was sized by eye. Art and fonts are resources like any other
+    # (`sci_gfx`), so the layout below is derived from real metrics -- measured on KQ6: plate
+    # 58x22, font 4 is 9px tall, "GUARDS" 31px.
+    import sci_gfx as _gfx
+    import sci_resource as _res
+    cfg = cfg or globals().get("_GAME_CFG") or config.ACTIVE
     try:
-        import sci_gfx as _gfx
-        import sci_resource as _res
-        game = _res.Sci0Game(config.ACTIVE.resource_dir)
-        cels = _gfx.decode_view(game, int(view))[int(loop)]["cels"]
-        c = cels[int(cel)]
-        plate_w, plate_h = c.width, c.height
-        face_is_button_pair = (int(cel) == 0 and len(cels) > 1
-                               and (cels[0].width, cels[0].height)
-                                   == (cels[1].width, cels[1].height))
-        # the panel names its font as a GLOBAL (KQ6: `font: global22`); resolve it to the
-        # number the game assigns, since only a number can be looked up as a resource
-        fnum = font
-        if str(font).startswith("global"):
-            am = re.search(r"\(=\s*%s\s+(\d+)\)" % re.escape(str(font)), _all_sources(src_dir))
-            fnum = am.group(1) if am else None
-        if fnum is not None:
-            font_h = _gfx.decode_font(game, int(fnum))["height"] or font_h
-    except Exception:                                  # noqa: BLE001 -- unreadable art/font
-        pass
-    # Two lines -- what the control IS, and what it is SET TO -- when the plate can hold them.
-    two_line = 2 * font_h <= plate_h
-    top1 = max(0, (plate_h - (2 * font_h if two_line else font_h)) // 2)
+        game = _res.Sci0Game(cfg.resource_dir)
+        loops = _gfx.decode_view(game, view_num)
+    except Exception as exc:                           # noqa: BLE001 -- unreadable art
+        return {"applied": False, "ui": "panel", "title": host[:-3],
+                "why": "the panel's view %d could not be read from %s (%s), so no face can be "
+                       "measured" % (view_num, cfg.resource_dir, exc)}
+    # the panel names its font as a GLOBAL (KQ6: `font: global22`); resolve it to the number the
+    # game assigns, since only a number can be looked up as a resource
+    all_src = _all_sources(src_dir)
+
+    def _resolve_font(spell):
+        if not str(spell).startswith("global"):
+            return spell
+        am = re.search(r"\(=\s*%s\s+(\d+)\)" % re.escape(str(spell)), all_src)
+        return am.group(1) if am else None
+
+    def _metrics(spell):
+        try:
+            return _gfx.decode_font(game, int(_resolve_font(spell)))
+        except Exception:                              # noqa: BLE001 -- unreadable font
+            return None
+
+    fmetrics = _metrics(font)
+    font_h = (fmetrics or {}).get("height") or 9
+
+    def _w(s, fm=None):
+        """Rendered width of `s`, or a per-character estimate when the font cannot be read."""
+        fm = fmetrics if fm is None else fm
+        return _gfx.text_width(fm, s) if fm else 6 * len(s)
+
+    title = "GUARDS"
+    modes = [n.upper() for n in MODE_NAMES]
+    faces = [(lp, ci, c) for lp, loop_d in enumerate(loops)
+             for ci, c in enumerate(loop_d["cels"]) if _is_blank_cel(c)]
+    fits = [(0 if (2 * font_h <= c.height
+                   and max(_w(title), max(_w(m) for m in modes)) <= c.width) else 1,
+             c.width * c.height, lp, ci, c)
+            for lp, ci, c in faces
+            if font_h <= c.height and _w(title) <= c.width]
+    if not fits:
+        return {"applied": False, "ui": "panel", "title": host[:-3],
+                "why": "the panel's art carries no blank plate big enough for a label, so there "
+                       "is no unlabelled face to host the chooser (every button face in it has a "
+                       "word baked in)"}
+    two_fit, _, loop, cel, face = min(fits)
+    view, loop, cel = view_spell, str(loop), str(cel)
+    plate_w, plate_h = face.width, face.height
+    # ⭐ AND IF THE PANEL'S OWN FONT WILL NOT FIT THE READOUT, ANOTHER OF THE GAME'S WILL. The
+    # two-line readout is the only way to see the mode without opening anything, so it is worth
+    # a smaller typeface: LB2's panel writes in font 69, twelve pixels tall, and its plate is
+    # twenty-three -- ONE pixel short of two lines -- while the same game's font 1207 is nine and
+    # fits with room to spare. Candidates are the fonts the GAME names (a `font:` send or a
+    # `Display`'s positional font argument, resolved through the global it is kept in); the
+    # largest that fits wins, so this never shrinks a label that was already legible.
+    #
+    # ⛔ IT REPLACES THE PLATE'S FONT ONLY. The chooser DIALOG is a window of the game's own, sized
+    # and drawn like every other one it opens, and it has all the room it needs -- shrinking its
+    # text too would make the patch's dialog the odd one out for a reason that is about a 23-pixel
+    # plate. So `label_font` is what moves and `font` stays the panel's.
+    label_font = font
+    if 2 * font_h > plate_h:
+        alts = []
+        # `font:` is unambiguous wherever it appears; the positional spelling is a bare `105`
+        # and is only known to be a font in the panel's own file, where the panel writes with it
+        for spell in set(re.findall(r"font:\s*(global\d+|\d+)", all_src)
+                         + re.findall(r"\b105\s+(global\d+|\d+)", text)):
+            fm = _metrics(spell)
+            if fm and 2 * (fm["height"] or 0) <= plate_h \
+                    and max(_w(title, fm), max(_w(m, fm) for m in modes)) <= plate_w:
+                alts.append((fm["height"], spell, fm))
+        if alts:
+            font_h, label_font, fmetrics = max(alts)
+            two_fit = 0
+    # Is the face a BUTTON PAIR -- loop = {cel 0: up, cel 1: down}, the shape `IconI::select`
+    # assumes when it animates a press? A blank plate never is, but prove it from the art
+    # instead of asserting it.
+    sibs = loops[int(loop)]["cels"]
+    face_is_button_pair = (int(cel) == 0 and len(sibs) > 1
+                           and (sibs[0].width, sibs[0].height) == (sibs[1].width, sibs[1].height))
+    # WHERE THE ROW GOES. The controls give the column -- the left-most icon on the deepest rung
+    # -- UNLESS the panel already draws this very plate on that rung, in which case it has said
+    # exactly where a plate of this face belongs and that position is cloned instead. KQ6 draws
+    # its 58x22 plate at x=104 under the text/speech switch, three pixels above the icon row's
+    # own offset, and that is where its shipped control sits. LB2 draws its plate beside a
+    # different control and KQ5 never draws its plate at all, so both fall back to the column.
+    deep = re.compile(r"\b%d\b\s+else\s+\b%d\b" % (x, y))
+    for dm in re.finditer(r"\(\s*DrawCel\s+%s\s+%s\s+%s\b"
+                          % (re.escape(str(view)), re.escape(loop), re.escape(cel)), text):
+        d = text[dm.start():_balanced_span(text, dm.start())]
+        am = re.match(r"\(\s*DrawCel\s+\S+\s+\S+\s+\S+\s+(-?\d+)\s+", d)
+        if not am or d[am.end()] != "(" or not deep.search(re.sub(r"\s+", " ", d)):
+            continue
+        deep_left = am.group(1)
+        ns_top = deep.sub("%d else %d" % (x + pitch, y + pitch),
+                          d[am.end():_balanced_span(d, am.end())], count=1)
+        break
+    # THE LABEL. Two lines -- what the control IS over what it is SET TO -- when the plate holds
+    # them; that readout is the only way to see the mode without opening anything, because the
+    # chooser closes the panel behind itself. When two lines do not fit, put both on ONE line if
+    # the plate is wide enough for it (KQ5's plate is 76x16: too short for two 12px lines, wide
+    # enough for "GUARDS FULL"), and only give the mode up when neither fits.
+    two_line = two_fit == 0
+    one_line_mode = not two_line and max(_w("%s %s" % (title, m)) for m in modes) <= plate_w
+    lines = 2 if two_line else 1
+    top1 = max(0, (plate_h - lines * font_h) // 2)
     top2 = top1 + font_h
     # ⭐ THE SIGNAL, AND THE ONE BIT THAT BROKE THREE BUILDS.
     #
@@ -1553,17 +1844,20 @@ def _install_panel_chooser(src_dir, g):
     # the hide, and the dismiss bit that lets the icon bar's modal loop exit all come from -- and
     # clear the press bit unless the face really is a button pair. Both the bit and the template
     # are read out of the game.
-    tmpl = _dialog_icon(text)
+    tmpl = _dialog_icon(text, src_dir)
     if tmpl is None:
         return {"applied": False, "ui": "panel", "title": host[:-3],
                 "why": "the panel has no control of its own that opens a dialog (a `select` that "
-                       "hides the panel and then prints), so there is no working shape to clone "
-                       "for a chooser -- and an icon that opens one without the panel's dismiss "
-                       "bit leaves the modal loop running over a disposed window"}
+                       "hides the panel and then prints, or a delegating control carrying the "
+                       "dismiss bit), so there is no working shape to clone for a chooser -- and "
+                       "an icon that opens one without the panel's dismiss bit leaves the modal "
+                       "loop running over a disposed window"}
     press_bit = _icon_press_bit(src_dir)
     signal = tmpl[1] if face_is_button_pair else tmpl[1] & ~press_bit
-    # join the panel's add: list right before its first eachElementDo:
-    ee = re.search(r"\n([ \t]*)eachElementDo:", text)
+    # join the panel's add: list right before its own eachElementDo: -- INSIDE THE HOST'S BODY,
+    # because a file can hold more than one GameControls (KQ5's save-game selector has an add:
+    # list of its own, in the same directory), and the anchor has to belong to the panel we chose
+    ee = re.compile(r"\n([ \t]*)eachElementDo:").search(text, *hspan)
     if not ee:
         return {"applied": False, "ui": "panel", "title": host[:-3],
                 "why": "GameControls add: list has no eachElementDo: anchor"}
@@ -1575,21 +1869,53 @@ def _install_panel_chooser(src_dir, g):
     # `init:` and `selector: #doit`, exactly as `iconAbout` joins the list -- an icon that opens
     # a dialog is initialised like the game's own do, and positions itself in `init` as well as
     # `show`. (iconTextSwitch, which only toggles, skips both; we are the About shape now.)
+    # ⭐ ...WHERE THE PANEL INITIALISES ITS ELEMENTS AT ALL. LB2 adds every icon un-init:ed and
+    # lets the icon bar do it, so an `init:` there would run before the panel's own `(super
+    # init:)` -- follow the list we are joining rather than KQ6's spelling of it.
+    #
+    # ⛔ AND THE QUESTION IS ABOUT THE LIST, NOT THE METHOD AROUND IT. Asked of the whole panel
+    # body, `\(\w+\s+init:` matches the panel's OWN `(super init: &rest)` -- which every one of
+    # these has -- so the answer was "yes" for every game and the derivation asked nothing.
+    add_at = re.compile(r"\badd:").search(text, *hspan)
+    inits = bool(add_at and re.search(r"\(\w+\s+init:", text[add_at.end():ee.start()]))
     edits.append((ee.start(), ee.start(),
-                  "\n%s(iconGuards init: selector: #doit yourself:)" % ind))
+                  "\n%s(iconGuards %sselector: #doit yourself:)" % (ind, "init: " if inits else "")))
     # GROW THE WINDOW by one pitch, or the new row is drawn outside it and clipped (the v26
-    # bug). The window's own `bottom:` expression is WRAPPED, never rewritten, so whatever
-    # the game computed still decides where the panel sits and how tall its art is.
-    grew = False
-    bset = re.search(r"\n\s*bottom:\s*", text)
-    if bset:
+    # bug). The window's own bottom expression is WRAPPED, never rewritten, so whatever the game
+    # computed still decides where the panel sits and how tall its art is.
+    #
+    # ⭐ EVERY WINDOW THE PANEL OWNS, IN EITHER SPELLING. KQ5 builds TWO -- a wide one for fast
+    # machines and a narrow one for slow -- and growing only the first would clip the new row in
+    # whichever the player is running; and a window can set its own height inside `open`
+    # (`(= bottom ..)`) instead of taking it as a `bottom:` send, which is how LB2 writes it.
+    grew = framed = 0
+    for bset in list(re.finditer(r"(?:\n\s*bottom:|\(=\s+bottom\b)\s*", text)):
         rest = text[bset.end():]
         if rest.lstrip()[:1] == "(":
             off = bset.end() + (len(rest) - len(rest.lstrip()))
             bend = _balanced_span(text, off)
             edits.append((off, bend, "(+ " + text[off:bend] + " %d)" % pitch))
-            grew = True
+            grew += 1
+        # ...AND A WINDOW THAT DRAWS ITS OWN FRAME MUST TAKE THE FRAME WITH IT (`_frame_edges`).
+        # Refusing is the right answer where the frame cannot be read: shipping a chooser that
+        # breaks the panel it lives in is worse than shipping no chooser.
+        frame = _frame_edges(text, bset.start(), pitch)
+        if frame is None:
+            return {"applied": False, "ui": "panel", "title": host[:-3],
+                    "why": "the panel's window computes its own rect and then draws its frame at "
+                           "literal coordinates that do not separate into two edges, so the "
+                           "frame cannot be grown with the window and the new row would be "
+                           "drawn below a border that stayed where it was"}
+        framed += len(frame)
+        edits.extend(frame)
+    # ...and one span may be reached twice (a method that assigns `bottom` more than once walks
+    # the same frame lines each time). Applying the same splice twice nests the replacement
+    # inside itself, so collapse by span before the walk.
+    spliced = set()
     for (s0, s1, rep) in sorted(edits, reverse=True):
+        if (s0, s1) in spliced:
+            continue
+        spliced.add((s0, s1))
         text = text[:s0] + rep + text[s1:]
     # ⭐ THE CHOOSER IS A DIALOG, OPENED THE WAY THIS PANEL ALREADY OPENS ONE. Four play reports
     # shaped it:
@@ -1617,82 +1943,111 @@ def _install_panel_chooser(src_dir, g):
     # ...))`, so a `select` that returns 0 when the chooser is dismissed would leave the modal
     # loop spinning over a window it had just disposed. `global63` is the panel itself,
     # `(= global63 self)` in its own init, so it is read from the game and not assumed.
+    def _display(what, top):
+        """One `Display` of `what`, centred in the plate's own width at `top` pixels down.
+
+        dsBACKGROUND -1 keeps the plate visible behind the text; dsALIGN 1 centres it in the
+        plate's real width, and the vertical offset is the font's real height in the plate's
+        real height, not a guessed 6."""
+        return ("\t\t(Display %s\n"
+                "\t\t\t100 nsLeft (+ nsTop %d)\n"
+                "\t\t\t105 %s\n\t\t\t102 %s\n\t\t\t103 -1\n\t\t\t106 %d\n\t\t\t101 1\n"
+                "\t\t)\n" % (what, top, label_font, ink, plate_w))
+
+    def _pick(var, vals):
+        """`var` takes the mode-2 string, unless the mode global says 0 or 1."""
+        return ("\t\t(= %s %s)\n"
+                "\t\t(if (== global%d 0)\n"
+                "\t\t\t(= %s %s)\n"
+                "\t\telse\n"
+                "\t\t\t(if (== global%d 1) (= %s %s))\n"
+                "\t\t)\n" % (var, vals[2], g, var, vals[0], g, var, vals[1]))
+
+    # THE FACE'S VIEW: a property where the panel writes a number, an assignment where it
+    # computes one (KQ5 picks its panel art off the print language, so the number does not exist
+    # until run time and only the game's own expression is right in every build).
+    numeric_view = str(view).lstrip("-").isdigit()
+    set_view = "" if numeric_view else "\t\t(= view %s)\n" % view
+    # cloned spellings arrive with the source's own line breaks and indentation, which read as
+    # nonsense once the form is nested two levels deeper than where it was copied from
+    def _flat(expr):
+        return re.sub(r"\s+\)", ")", " ".join(str(expr).split()))
+
+    posn = "\t\t(= nsLeft %s)\n\t\t(= nsTop %s)\n" % (_flat(deep_left), _flat(ns_top))
+    # THE LABEL. Two lines when the plate holds them, one line carrying the mode when it does
+    # not but is wide enough, and the bare name only when neither fits.
+    if two_line:
+        show_tmp, pre = " &tmp temp0", _pick("temp0", ["{%s}" % m for m in modes])
+        label = _display("{%s}" % title, top1) + _display("temp0", top2)
+    elif one_line_mode:
+        show_tmp = " &tmp temp0"
+        pre = _pick("temp0", ["{%s %s}" % (title, m) for m in modes])
+        label = _display("temp0", top1)
+    else:
+        show_tmp, pre, label = "", "", _display("{%s}" % title, top1)
+    # ⭐ THE CHOOSER IS ASKED IN THE GAME'S OWN DIALOG FORM. KQ6 and LB2 have the `Print` class
+    # with `addButton:`; KQ5 is SCI1 and has no `addButton:` anywhere in the game -- its own
+    # About control asks with `(proc255_0 <text> 81 {label} value ...)`, the same button-dialog
+    # idiom the MENU chooser already emits. Derived from the game's vocabulary, because a
+    # selector the game does not define is a compile error, not a fallback.
+    if "addButton:" in _all_sources(src_dir):
+        prompt = ["{now: %s}" % n.lower() for n in MODE_NAMES]
+        ask = ("\t\t(= temp0\n"
+               "\t\t\t(Print\n"
+               "\t\t\t\tfont: %s\n"
+               "\t\t\t\taddText: {%s:}\n"
+               "\t\t\t\taddText: temp1 0 14\n"
+               "\t\t\t\taddButton: 1 {%s} 0 34\n"
+               "\t\t\t\taddButton: 2 {%s} 48 34\n"
+               "\t\t\t\taddButton: 3 {%s} 96 34\n"
+               "\t\t\t\tinit:\n"
+               "\t\t\t)\n"
+               "\t\t)\n" % (font, _CHOOSER_TITLE, _mode_button(0), _mode_button(1),
+                            _mode_button(2)))
+    else:
+        prompt = ["{%s -- now: %s}" % (_CHOOSER_TITLE, n.lower()) for n in MODE_NAMES]
+        proc = re.search(r"\(proc\d+_\d+", _RETRACTION_FORM).group(0)[1:]
+        ask = ("\t\t(= temp0\n"
+               "\t\t\t(%s\n"
+               "\t\t\t\ttemp1\n"
+               "\t\t\t\t81 {%s} 1\n"
+               "\t\t\t\t81 {%s} 2\n"
+               "\t\t\t\t81 {%s} 3\n"
+               "\t\t\t)\n"
+               "\t\t)\n" % (proc, _mode_button(0), _mode_button(1), _mode_button(2)))
     inst = (
         "\n(instance iconGuards of ControlIcon\n"
-        "\t(properties\n\t\tview %s\n\t\tloop %s\n\t\tcel %s\n\t\tsignal %d\n\t)\n\n"
+        "\t(properties\n%s\t\tloop %s\n\t\tcel %s\n\t\tsignal %d\n\t)\n\n"
         # The label is written AFTER `super show:` -- the plate is the icon's own face, so a
-        # label drawn before it would be painted over. dsBACKGROUND -1 keeps the plate visible
-        # behind the text; dsALIGN 1 centres it in the plate's own width, and the vertical
-        # offsets are the font's real height in the plate's real height, not a guessed 6. Two
-        # lines when they fit -- what the control IS over what it is SET TO -- so the mode is
-        # legible without opening anything, which is also the only way to read it back after the
-        # chooser has closed the panel behind itself.
-        "\t(method (show%s)\n"
-        "%s"
-        "\t\t(= nsLeft %d)\n"
-        "\t\t(= nsTop %s)\n"
-        "\t\t(super show: &rest)\n"
-        "\t\t(Display {GUARDS}\n"
-        "\t\t\t100 nsLeft (+ nsTop %d)\n"
-        "\t\t\t105 %s\n\t\t\t102 %s\n\t\t\t103 -1\n\t\t\t106 %d\n\t\t\t101 1\n"
-        "\t\t)\n"
-        "%s"
+        # label drawn before it would be painted over.
+        "\t(method (show%s)\n%s%s%s"
+        "\t\t(super show: &rest)\n%s"
         "\t)\n\n"
         # About defines `init` as well as `show`, because it is init:-ed from the add: list.
-        "\t(method (init)\n"
-        "\t\t(= nsLeft %d)\n"
-        "\t\t(= nsTop %s)\n"
+        "\t(method (init)\n%s%s"
         "\t\t(super init: &rest)\n"
         "\t)\n\n"
         # Short lines only: a long unpositioned sentence WRAPS, and buttons placed on the
         # wrapped line are drawn over the text (the v26 defect).
         "\t(method (select &tmp temp0 temp1)\n"
         "\t\t(super select: &rest)\n"
-        "\t\t(%s hide:)\n"
-        "\t\t(= temp1 {now: %s})\n"
-        "\t\t(if (== global%d 0)\n"
-        "\t\t\t(= temp1 {now: %s})\n"
-        "\t\telse\n"
-        "\t\t\t(if (== global%d 1) (= temp1 {now: %s}))\n"
-        "\t\t)\n"
-        "\t\t(= temp0\n"
-        "\t\t\t(Print\n"
-        "\t\t\t\tfont: %s\n"
-        "\t\t\t\taddText: {Softlock guards:}\n"
-        "\t\t\t\taddText: temp1 0 14\n"
-        "\t\t\t\taddButton: 1 {%s} 0 34\n"
-        "\t\t\t\taddButton: 2 {%s} 48 34\n"
-        "\t\t\t\taddButton: 3 {%s} 96 34\n"
-        "\t\t\t\tinit:\n"
-        "\t\t\t)\n"
-        "\t\t)\n"
+        "\t\t(%s hide:)\n%s%s"
         # dismissing the chooser (temp0 == 0) keeps the current mode
         "\t\t(if temp0 (= global%d (- temp0 1)))\n"
         # ...and the icon bar's loop only reads its exit flag on a TRUE select (see above)
         "\t\t(return 1)\n"
-        "\t)\n)\n" % (view, loop, cel, signal,
-                      " &tmp temp0" if two_line else "",
-                      ("\t\t(= temp0 {%s})\n"
-                       "\t\t(if (== global%d 0)\n"
-                       "\t\t\t(= temp0 {%s})\n"
-                       "\t\telse\n"
-                       "\t\t\t(if (== global%d 1) (= temp0 {%s}))\n"
-                       "\t\t)\n" % (MODE_NAMES[2].upper(), g, MODE_NAMES[0].upper(),
-                                    g, MODE_NAMES[1].upper())) if two_line else "",
-                      deep_left, ns_top, top1, font, ink, plate_w,
-                      ("\t\t(Display temp0\n"
-                       "\t\t\t100 nsLeft (+ nsTop %d)\n"
-                       "\t\t\t105 %s\n\t\t\t102 %s\n\t\t\t103 -1\n\t\t\t106 %d\n\t\t\t101 1\n"
-                       "\t\t)\n" % (top2, font, ink, plate_w)) if two_line else "",
-                      deep_left, ns_top, panel_global,
-                      MODE_NAMES[2].lower(), g, MODE_NAMES[0].lower(),
-                      g, MODE_NAMES[1].lower(), font,
-                      _mode_button(0), _mode_button(1), _mode_button(2), g))
+        "\t)\n)\n" % (("\t\tview %s\n" % view) if numeric_view else "", loop, cel, signal,
+                      show_tmp, set_view, pre, posn, label,
+                      set_view, posn,
+                      panel_global, _pick("temp1", prompt), ask, g))
     text = text + inst
     open(os.path.join(src_dir, host), "w").write(text)
     return {"applied": True, "ui": "panel", "title": host[:-3], "row_pitch": pitch,
-            "window_grown": grew, "face": "%s/%s/%s (blank plate + Display label)"
-                                          % (view, loop, cel),
+            "window_grown": grew, "frame_edges_moved": framed, "face_view": view_num,
+            "face": "%s/%s/%s (blank %dx%d plate + Display label, %s)"
+                    % (view, loop, cel, plate_w, plate_h,
+                       "2 lines" if two_line else ("1 line with the mode" if one_line_mode
+                                                   else "1 line, no room for the mode")),
             # say the signal out loud: it is the whole of the v29..v31 defect, and a build log
             # that prints "cloned iconAbout 449 -> 448 (no press animation)" is reviewable
             "signal": signal, "cloned_from": "%s %d" % tmpl,
