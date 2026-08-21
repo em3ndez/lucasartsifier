@@ -2266,9 +2266,54 @@ CodeResult BinaryOp::OutputByteCode(CompileContext &context) const
     {
         if (Operator == BinaryOperator::LogicalAnd || Operator == BinaryOperator::LogicalOr)
         {
-            // Handle && and || when not used in a condition.
-            // Basically, we write an "if statement" that evaluates to 1 or 0
-            return _WriteFakeIfStatement(context, *this);
+            // scicompile fix (2026-08-21): a VALUE-position `and`/`or` yields an OPERAND, not
+            // a boolean. Upstream sent this to _WriteFakeIfStatement, whose own comment states
+            // the intent -- "we write an 'if statement' that evaluates to 1 or 0" -- which is C
+            // semantics. SCI is not C: the PMachine has no normalised bool, and Sierra's own
+            // compiler leaves the deciding operand in the accumulator. Sierra's code depends on
+            // it, in the standard idiom for an optional object argument:
+            //
+            //     (param1 setHeading: temp0 (and (IsObject temp3) temp3))
+            //
+            // `setHeading:`'s third argument is the CUE TARGET, so "1" instead of the object
+            // means the turn completes and the cue never reaches the caller. Measured in play:
+            // every LB2 conversation stopped dead after its first spoken line (script 0,
+            // proc0_6). KQ6's rm220 carries the same idiom, and so does `Actor::setHeading` in
+            // the class script every SCI game shares.
+            //
+            // The emitted shape, and why it needs nothing else:
+            //
+            //     <left into acc>
+            //     bnt/bt END        ; short circuit -- acc holds the operand that decided it
+            //     <right into acc>
+            //     END:              ; fell through -- acc holds the right operand
+            //
+            // `bnt`/`bt` test the accumulator and leave it alone, so BOTH paths arrive with the
+            // right value already there. Upstream's version emitted exactly this chain and then
+            // clobbered it with `ldi 1`; the whole cure is to stop doing that and to land the
+            // short-circuit branch PAST the right operand instead of before it.
+            //
+            // Conditions are untouched: `InConditional()` above still routes to
+            // _OutputByteCodeAnd/Or, which weave their branches into the enclosing test. Only a
+            // position that READS the value changes, which is the only position that was wrong.
+            const bool fIsAnd = (Operator == BinaryOperator::LogicalAnd);
+            const BranchBlockIndex shortIndex =
+                fIsAnd ? BranchBlockIndex::Failure : BranchBlockIndex::Success;
+            branch_block shortCircuit(context, shortIndex);
+            {
+                COutputContext accContext(context, OC_Accumulator);
+                _statement1->OutputByteCode(context);
+            }
+            context.code().inst(GetLineNumber(),
+                                fIsAnd ? Opcode::BNT : Opcode::BT,
+                                context.code().get_undetermined(),
+                                shortIndex);
+            {
+                COutputContext accContext(context, OC_Accumulator);
+                _statement2->OutputByteCode(context);
+            }
+            shortCircuit.leave();   // both paths converge HERE, past the right operand
+            return CodeResult(PushToStackIfAppropriate(context, GetLineNumber()), DataTypeBool);
         }
         else
         {
