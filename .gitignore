@@ -9,6 +9,7 @@ tools/scicompile/build/
 .venv-bdd/
 .venv-x/
 tools/drive_scummvm.ini
+tools/sci_console.ini
 build/
 reports/
 
