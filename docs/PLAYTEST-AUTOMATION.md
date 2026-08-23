@@ -298,13 +298,44 @@ What that buys, all verified:
   (it is decremented in the opcode loop, not once per drawn frame), so `resume()` is a bounded
   run rather than a wall-clock guess, and it needs no keystroke to get control back.
 
-⛔ **Where it stops: a `send` that makes the game PRINT does not return.** `proc255_0` opens a
-modal Dialog and blocks inside the re-entrant `run_vm` — and while the text-console debugger is
-waiting on `fgets`, nothing is pumping events, so the dialog is never dismissed. The graphical
-build does not have this problem: its `_debuggerDialog->runModal()` pumps while it waits, which
-is why every guard result above was obtained on the stock binary. Injecting into the game's own
-event object instead does not help either — `User:doit` explicitly zeroes `curEvent` before every
-`GetEvent`.
+⛔ **Where it stops: a `send` that makes the game PRINT does not return.**
+
+A screenshot taken during the block settles what is happening, and it is not what it looks like.
+The dialog is **fully drawn** — *"Mmmmmmm! That was the best custard pie Graham has ever eaten!"* —
+with an **hourglass cursor**. So the dialog's own loop is running and input is disabled: it is
+waiting on a TIMER, not on a click. And inside a debugger-nested `run_vm` the game clock does not
+advance, so that timer never expires. It waited 45 seconds for a `#time 4` dialog.
+
+That rules out the obvious repairs. Clicking does not help (nothing is waiting for a click).
+Building with `--enable-readline` does not help either: `readline_eventFunction` pumps only while
+readline is waiting AT THE PROMPT, and the block is inside `cmdSend`, after readline has already
+returned a line. Injecting into the game's own event object and letting the normal loop deliver it
+does not help: `User:doit` explicitly zeroes `curEvent` before every `GetEvent`.
+
+Nor does going around `send` entirely. Setting the icon bar to its inventory-USE icon (`icon4`,
+whose `message` is 4) and injecting a REAL mouse click while the game runs under a countdown gets
+remarkably far — the click reaches the handler, the arm's first statement runs, its text appears —
+and then stops at exactly the same place:
+
+```
+before: warn=0x0000 g130=0x0000 has_pie=1
+after : warn=0x0000 g130=0x0001 has_pie=1     <- arm entered, printed, then parked
+```
+
+⭐ **The single root cause: the game clock does not advance while the debugger holds stdin.** The
+guard's refusal is emitted *after* the print, the print is a real-time modal, and the game only
+ever runs in `debug_countdown` bursts with the clock frozen between them — so the modal never
+reaches its timeout however many bursts it is given, and follow-up clicks do not dismiss it. That
+explains the `send` case and the click case together.
+
+The graphical build does not have the problem — `_debuggerDialog->runModal()` keeps the engine
+turning while it waits — which is why every guard result above was obtained on the stock binary.
+
+**What would actually fix it** is a change in `Debugger::enter()`: pump the event manager and let
+time pass while blocked on `fgets`, the way `readline_eventFunction` already does at the readline
+prompt (but that hook does not run inside `cmdSend`, which is why `--enable-readline` is not the
+answer). That is a small patch to a GPL tree we only vendor as a reference, so it is a decision
+rather than a detail.
 
 So the honest split today is **pipe for state, stock binary for interaction**:
 

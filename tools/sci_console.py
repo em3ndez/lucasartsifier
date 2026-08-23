@@ -492,7 +492,7 @@ class Console:
     # how long the game gets before the debugger takes itself back.
     INSTR_PER_SECOND = 40000
 
-    def resume(self, seconds=0.0, instructions=None):
+    def resume(self, seconds=0.0, instructions=None, during=None, at=1.2):
         """Hand control back to the game, then TAKE IT BACK.
 
         Over the pipe this is deterministic and needs no keystroke: `debug_countdown N` makes the
@@ -505,7 +505,17 @@ class Console:
             self._cmd_pipe("debug_countdown %d" % n)
             self._read_new()
             self._write("exit")
-            self._await_prompt(timeout=max(30, seconds * 4 + 30))
+            # `during` runs while the game is genuinely RUNNING -- not nested under the debugger.
+            # That is the whole trick behind the click transport: a dialog opened here is on the
+            # game's own clock and dismisses itself, where the same dialog opened inside
+            # `cmdSend` hangs forever (see the docstring).
+            if during is not None:
+                time.sleep(at)
+                try:
+                    during()
+                except Exception:                    # noqa: BLE001 -- a lost click is not fatal
+                    pass
+            self._await_prompt(timeout=max(30, seconds * 4 + 30), dismiss=False)
             return
         self.type("go\n")
         if seconds:

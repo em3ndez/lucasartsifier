@@ -160,6 +160,65 @@ def game_event(c, names=("?uEvt", "?ibEvent")):
     raise RuntimeError("no permanent Event instance found (tried %s)" % (names,))
 
 
+USE_ICON = "?icon4"          # the icon bar's inventory-USE icon: its `message` is 4, and
+                             # IconBar copies `(curIcon message:)` onto the event it dispatches
+
+
+def offer_click(c, target, item, seconds=6.0, log=print):
+    """Make the offer with a REAL CLICK, while the game runs normally.
+
+    ⚠️ THIS DOES NOT YET COMPLETE A GUARD ROW, and is kept for the next attempt rather than for
+    use. It gets remarkably far -- the click reaches the handler, the arm's first statement runs
+    (flag 16 set) and its print appears -- and then stops, every time, at the same place:
+
+        before: warn=0x0000 g130=0x0000 has_pie=1
+        after : warn=0x0000 g130=0x0001 has_pie=1   <- arm entered, printed, then parked
+
+    The guard's refusal is emitted AFTER the print, so a row that reads state here sees a guard
+    that "did not fire" when it simply has not been reached. The print is a modal dialog and the
+    game only runs in `debug_countdown` bursts with the clock frozen in between, so a real-time
+    dialog never reaches its timeout no matter how many bursts are given; follow-up clicks do not
+    dismiss it either. Same root cause as the `send` case: the clock does not advance while the
+    debugger holds stdin.
+
+    ⛔ This exists because `send <target> handleEvent <ev>` cannot be used on the text-console
+    build: the guard's refusal is a TIMED dialog, and inside a debugger-nested `run_vm` the game
+    clock never advances, so it waits forever (screenshot: dialog drawn, hourglass cursor, 45s and
+    counting). Here the game is genuinely running -- countdown armed, debugger exited -- so the
+    dialog is on its own clock and dismisses itself.
+
+    Only ONE XTEST event is involved, a single click, which is a far smaller target for the
+    flakiness that typing suffers from."""
+    box = nsrect(c, target, log=log)
+    cx = (box["nsLeft"] + box["nsRight"]) // 2
+    cy = (box["nsTop"] + box["nsBottom"]) // 2
+    bar = c.gaddr(69)
+    c.cmd("send %s curIcon %s" % (bar, USE_ICON))       # "use the held item" mode -> message 4
+    c.cmd("send %s curInvIcon ?%s" % (bar, item))
+    c.said()                                            # drop the setup's chatter
+    def act():
+        c.click(cx, cy)                                 # the offer
+        # ⛔ Then DISMISS the dialog it opens, in the same running window. The guard's refusal
+        # comes AFTER the print in the emitted arm, so a probe that reads state while the print
+        # is still up sees the arm half-executed: flag set, text printed, warn bit not yet
+        # written. And waiting it out does not work -- the game only runs in countdown bursts and
+        # the clock is frozen in between, so a real-time dialog never reaches its timeout.
+        for _ in range(3):
+            _t.sleep(1.0)
+            c.click(160, 100)
+
+    import time as _t
+    log("  click (%d,%d) on %s" % (cx, cy, target))
+    c.resume(seconds, during=act)
+    # ⛔ Let the handler FINISH. `debug_countdown` re-enters after N instructions wherever the VM
+    # happens to be -- which the first time round was between the eat's print and the guard's
+    # retraction, so the row read "no refusal" for a guard that simply had not run yet. Keep
+    # running until the state stops moving.
+    for _ in range(4):
+        c.resume(3)
+    return c.said(), (cx, cy)
+
+
 def offer(c, ev, target, item, box=None, aim=None, log=print):
     """Hand `item` to `target` the way a click does.
 
