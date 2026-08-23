@@ -361,12 +361,33 @@ stdin instead of blocking, pumping events and letting time pass between polls �
 while the debugger is *not* at a prompt, so the patch never runs — `send <obj> handleEvent <ev>`
 on a speaking handler still hangs. Only the click path benefits.
 
-⚠️ **And the click path is not finished.** It now fails later and differently:
-`IconBar::dispatchEvent: Send to invalid selector claimed of object at 0024:05f8` — the object
-being the Pie, i.e. the `curInvIcon` the probe set by hand. Setting `curIcon`/`curInvIcon`
-directly is evidently not the same state the game reaches when a player picks an item from the
-inventory window, and the difference only surfaces once execution gets far enough to matter. That
-is where this stands.
+⚠️ **And the click path is still not finished.** Where it stands after a long push:
+
+* The icon-bar setup was rewritten to replicate `Inventory::showSelf`'s tail exactly (`enable:`
+  the bar's own `useIconItem`, copy the item's cursor onto it, then set `curIcon`/`curInvIcon`)
+  rather than poking `icon4` by name. That removed one whole failure and is the right way to do
+  it regardless.
+* With the patch, **the print completes**: a backtrace taken afterwards shows an ordinary game
+  loop (`KQ5::play → doit → Game::doit → User::doit`), not a stack parked in `PrintScript`.
+* The guarded arm **runs**: flag 16 is set and the eat text appears, which are its first two
+  statements.
+* But the guard, three statements later **in the same arm with no branch in between**, does not
+  execute — the warn bit stays clear and the item stays held.
+
+Those last two are in tension, and the tension is the lead. If the arm ran and the handler
+returned, the guard cannot have been skipped by ordinary control flow. The remaining explanation
+is that the print **aborts script processing** (SCI unwinds for some transitions), so the rest of
+the arm is discarded and the VM returns to the main loop — which is exactly what the evidence
+looks like. That is checkable: watch `s->abortScriptProcessing` across the call, or breakpoint the
+guard's own address and see whether it is ever reached.
+
+⚠️ Also still intermittent: `IconBar::dispatchEvent: Send to invalid selector claimed of object at
+<the item>`. `IconBar::doit` only ever passes its own `ibEvent`, so an inventory item arriving
+there is not explained yet either. Removing the probe's extra "dismiss" clicks did not fix it, so
+it is not stray input.
+
+**Bottom line: no guard row has completed over the pipe.** The four verified rows remain the ones
+driven on the stock binary with XTEST.
 
 So the honest split today is **pipe for state, stock binary for interaction**:
 

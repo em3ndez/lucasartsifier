@@ -160,6 +160,13 @@ def game_event(c, names=("?uEvt", "?ibEvent")):
     raise RuntimeError("no permanent Event instance found (tried %s)" % (names,))
 
 
+def _ret(out):
+    """The `Value returned: ssss:oooo` a `send` prints, or None."""
+    import re as _re
+    m = _re.search(r"Value returned:\s*([0-9a-f]{4}:[0-9a-f]{4})", out, _re.I)
+    return m.group(1) if m else None
+
+
 USE_ICON = "?icon4"          # the icon bar's inventory-USE icon: its `message` is 4, and
                              # IconBar copies `(curIcon message:)` onto the event it dispatches
 
@@ -192,30 +199,48 @@ def offer_click(c, target, item, seconds=6.0, log=print):
     box = nsrect(c, target, log=log)
     cx = (box["nsLeft"] + box["nsRight"]) // 2
     cy = (box["nsTop"] + box["nsBottom"]) // 2
+    # ⛔ Replicate what the INVENTORY WINDOW does when a player picks an item -- the tail of
+    # `Inventory::showSelf`:
+    #     (if (not (global69 curInvIcon:)) (global69 enable: (global69 useIconItem:)))
+    #     (global69 curIcon: ((global69 useIconItem:) cursor: (curIcon cursor:) yourself:)
+    #               curInvIcon: curIcon)
+    # Poking curIcon/curInvIcon by hand is NOT the same state, and the difference does not show
+    # up until execution gets far enough to matter -- as `IconBar::dispatchEvent: Send to invalid
+    # selector claimed of object at <the item>`. The icon that belongs in curIcon is the bar's
+    # OWN `useIconItem`, not `icon4` looked up by name.
     bar = c.gaddr(69)
-    c.cmd("send %s curIcon %s" % (bar, USE_ICON))       # "use the held item" mode -> message 4
+    use_icon = _ret(c.send(bar, "useIconItem")[1])
+    if use_icon is None:
+        raise RuntimeError("icon bar has no useIconItem")
+    cursor = _ret(c.send("?" + item, "cursor")[1])
+    if not c.send(bar, "curInvIcon")[0]:
+        c.cmd("send %s enable %s" % (bar, use_icon))
+    if cursor:
+        c.cmd("send %s cursor %s" % (use_icon, cursor))
+    c.cmd("send %s curIcon %s" % (bar, use_icon))
     c.cmd("send %s curInvIcon ?%s" % (bar, item))
+    log("  useIconItem=%s itemCursor=%s" % (use_icon, cursor))
     c.said()                                            # drop the setup's chatter
     def act():
-        c.click(cx, cy)                                 # the offer
-        # ⛔ Then DISMISS the dialog it opens, in the same running window. The guard's refusal
-        # comes AFTER the print in the emitted arm, so a probe that reads state while the print
-        # is still up sees the arm half-executed: flag set, text printed, warn bit not yet
-        # written. And waiting it out does not work -- the game only runs in countdown bursts and
-        # the clock is frozen in between, so a real-time dialog never reaches its timeout.
-        for _ in range(3):
-            _t.sleep(1.0)
-            c.click(160, 100)
+        # ⛔ EXACTLY ONE CLICK. Extra "dismiss" clicks were added when prints could not finish;
+        # with the local ScummVM patch they finish by themselves, and the extra clicks became
+        # actively harmful -- they land on the icon bar, open the inventory window, and the next
+        # one is delivered to an inventory ITEM, which is how
+        # `IconBar::dispatchEvent: Send to invalid selector claimed of object at <item>` happens.
+        c.click(cx, cy)
 
     import time as _t
     log("  click (%d,%d) on %s" % (cx, cy, target))
     c.resume(seconds, during=act)
-    # ⛔ Let the handler FINISH. `debug_countdown` re-enters after N instructions wherever the VM
-    # happens to be -- which the first time round was between the eat's print and the guard's
-    # retraction, so the row read "no refusal" for a guard that simply had not run yet. Keep
-    # running until the state stops moving.
-    for _ in range(4):
-        c.resume(3)
+    # ⛔ Let the handler FINISH -- and note WHERE the waiting has to happen. `debug_countdown`
+    # re-enters wherever the VM is, which for a speaking guard is inside the print, waiting on CD
+    # speech. The speech needs REAL TIME, and real time only passes at the debugger prompt (with
+    # the local ScummVM patch; without it, not even there). Bursts alone never finish it, because
+    # the driver returns to the prompt and immediately issues the next command. So: sit at the
+    # prompt for a moment, THEN give it another burst to notice.
+    for _ in range(6):
+        _t.sleep(1.2)                                   # time passes here, thanks to the patch
+        c.resume(2)
     return c.said(), (cx, cy)
 
 
