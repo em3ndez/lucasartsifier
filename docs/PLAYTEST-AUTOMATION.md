@@ -331,11 +331,42 @@ explains the `send` case and the click case together.
 The graphical build does not have the problem — `_debuggerDialog->runModal()` keeps the engine
 turning while it waits — which is why every guard result above was obtained on the stock binary.
 
-**What would actually fix it** is a change in `Debugger::enter()`: pump the event manager and let
-time pass while blocked on `fgets`, the way `readline_eventFunction` already does at the readline
-prompt (but that hook does not run inside `cmdSend`, which is why `--enable-readline` is not the
-answer). That is a small patch to a GPL tree we only vendor as a reference, so it is a decision
-rather than a detail.
+### The patch, and what a backtrace found
+
+We only use ScummVM locally for debugging, so it can be patched. Before writing any C++ the
+console was asked where the VM actually was — the countdown fires mid-dialog, which leaves a
+prompt, which means `bt` works:
+
+```
+6: script 0   - ego::handleEvent      <- the guarded arm
+7: script 0   - call 62b              <- the message printer
+8: script 300 - export 0              <- PrintScript's proc300_0
+9: script 300 - call 8d
+a: script 300 - call 1f6
+```
+
+`proc300_0` is `(DoAudio 2 ...)` followed by a wait guarded by `(if (> temp0 0))` — it is the
+**CD speech**. The engine advances only during `debug_countdown` bursts, and between every burst
+the debugger sits in `fgets` with the clock stopped, so the speech never finishes. Muting speech
+does not help; neither does un-muting it. (Both were tried.)
+
+`tools/scummvm-patches/0001-*.patch` makes the plain-`fgets` branch of `Debugger::enter()` poll
+stdin instead of blocking, pumping events and letting time pass between polls —
+`readline_eventFunction`'s idea, in the place that needs it. `build_text_scummvm.sh` applies it.
+
+**It works, measurably**: with the patch the click path runs *past* the print and reaches
+`IconBar::dispatchEvent`, which it never did before.
+
+⚠️ **It does not rescue `send`.** A print raised inside `cmdSend`'s re-entrant `run_vm` happens
+while the debugger is *not* at a prompt, so the patch never runs — `send <obj> handleEvent <ev>`
+on a speaking handler still hangs. Only the click path benefits.
+
+⚠️ **And the click path is not finished.** It now fails later and differently:
+`IconBar::dispatchEvent: Send to invalid selector claimed of object at 0024:05f8` — the object
+being the Pie, i.e. the `curInvIcon` the probe set by hand. Setting `curIcon`/`curInvIcon`
+directly is evidently not the same state the game reaches when a player picks an item from the
+inventory window, and the difference only surfaces once execution gets far enough to matter. That
+is where this stands.
 
 So the honest split today is **pipe for state, stock binary for interaction**:
 

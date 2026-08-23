@@ -25,6 +25,16 @@ BUILD=${1:-/tmp/scummvm-text-build}
 
 [ -d "$SRC/common" ] || (cd "$SRC" && git sparse-checkout disable)
 
+# The local debugging patch: without it the text console stops the engine dead while it waits
+# for a line, and anything the game is waiting on in real time never finishes. See the patch
+# header for the backtrace that proves it.
+if ! (cd "$SRC" && git diff --quiet gui/debugger.cpp); then
+    echo "gui/debugger.cpp already patched"
+else
+    (cd "$SRC" && git apply "$HERE/scummvm-patches/0001-text-console-keep-the-engine-alive-while-waiting.patch")
+    echo "applied 0001-text-console-keep-the-engine-alive-while-waiting.patch"
+fi
+
 # SDL2 headers without root: the runtime lib is already installed, only the dev package is
 # missing, and it can be unpacked into a prefix. Its `libSDL2.so` symlink points at a file that
 # only the RUNTIME package ships, so it dangles and the linker silently falls back to the static

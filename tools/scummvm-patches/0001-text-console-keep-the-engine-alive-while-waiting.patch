@@ -1,0 +1,86 @@
+Keep the engine alive while the text console waits for a line.
+
+WHY (measured, not guessed). With --enable-text-console the debugger blocks in
+`fgets(stdin)`, and while it is blocked ScummVM services nothing: no events, no time.
+That is invisible until a guard row is driven, and then it stops dead in one place --
+
+    before: warn=0x0000 g130=0x0000 has_pie=1
+    after : warn=0x0000 g130=0x0001 has_pie=1   <- arm entered, printed, then parked
+
+A backtrace taken at that moment names the culprit exactly:
+
+    6: script 0   - ego::handleEvent      <- the guarded arm
+    7: script 0   - call 62b              <- the message printer
+    8: script 300 - export 0              <- PrintScript's proc300_0
+    9: script 300 - call 8d
+    a: script 300 - call 1f6
+
+`proc300_0` is `(DoAudio 2 ...)` followed by a wait that only runs `(if (> temp0 0))` --
+the CD speech. The engine only advances during `debug_countdown` bursts, and between
+every burst the debugger sits in `fgets` with the clock stopped, so the speech never
+finishes and the guard's refusal (emitted AFTER the print) is never reached. Muting
+speech does not help; nor does un-muting it.
+
+So: poll stdin instead of blocking on it, and between polls pump events and let time
+pass. This is what `readline_eventFunction` already does for the readline build, except
+that hook only runs while readline is waiting AT THE PROMPT.
+
+FOR LOCAL DEBUGGING ONLY -- never shipped, never sent upstream from here.
+
+APPLIES TO: gui/debugger.cpp, the plain-fgets branch of Debugger::enter().
+APPLY WITH: (cd tools/scummvm-ref && git apply ../scummvm-patches/0001-*.patch)
+
+MEASURED EFFECT. Before, a guard row parked forever at the print however many
+`debug_countdown` bursts it got. After, execution continues past it -- the run reaches
+IconBar::dispatchEvent, which it never did before.
+
+⚠️ LIMIT: this covers the debugger WAITING FOR A LINE. It does NOT cover a print raised
+inside `cmdSend`'s re-entrant run_vm, because the debugger is not at a prompt there --
+so `send <obj> handleEvent <ev>` on a speaking handler still hangs. The click path is
+the one this unblocks.
+
+diff --git a/gui/debugger.cpp b/gui/debugger.cpp
+index b37c84ad..075a7937 100644
+--- a/gui/debugger.cpp
++++ b/gui/debugger.cpp
+@@ -43,6 +43,12 @@
+ 	#include <readline/readline.h>
+ 	#include <readline/history.h>
+ 	#include "common/events.h"
++#else
++	// LOCAL DEBUGGING PATCH -- see tools/scummvm-patches/. Needed so the text console can wait
++	// for a line WITHOUT stopping the engine.
++	#include "common/events.h"
++	#include <unistd.h>
++	#include <sys/select.h>
+ #endif
+ 
+ 
+@@ -279,6 +285,27 @@ void Debugger::enter() {
+ 	do {
+ 		printf("debug> ");
+ 		::fflush(stdout);
++
++		// LOCAL DEBUGGING PATCH. Blocking in fgets() stops the engine dead: no events, no time.
++		// A game waiting on anything real-time -- CD speech, a timed dialog -- therefore never
++		// finishes, and any script parked behind it never resumes, however many
++		// `debug_countdown` bursts it is given. Poll stdin instead, and let the engine breathe
++		// between polls. (readline builds get this from rl_event_hook; this is the same idea for
++		// the plain-fgets path.)
++		for (;;) {
++			fd_set fds;
++			FD_ZERO(&fds);
++			FD_SET(STDIN_FILENO, &fds);
++			struct timeval tv = {0, 0};
++			if (select(STDIN_FILENO + 1, &fds, nullptr, nullptr, &tv) > 0)
++				break;                          // a line is waiting
++			Common::Event event;
++			while (g_system->getEventManager()->pollEvent(event)) {
++				// drop them: the game is paused at a prompt, but time must still pass
++			}
++			g_system->delayMillis(10);
++		}
++
+ 		if (!fgets(buf, sizeof(buf), stdin))
+ 			return;
+ 
