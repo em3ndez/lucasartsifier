@@ -321,29 +321,46 @@ There is no tutorial as such. What exists:
 The modes: `record`, `playback`, `fast_playback`, `update`, `info`, `passthrough`. `info` prints a
 recording's author/name/description. `update` replays and **re-writes the stored hashes**.
 
-### ⛔ The constraint that decides whether we can use it
+### The constraint that looked fatal, and the measurement that retired it
 
-A recording stores the **MD5 of the game's own files** (`hashRecords`, set from the detection
-entry), and on playback a mismatch is not a warning — it is fatal:
+A recording stores the **MD5 of the game's own files**, and on playback a mismatch is not a
+warning — it is fatal (`processGameDescription` → `error("playback:action=error …")`).
+`fast_playback` is `kRecorderPlayback` plus a speed flag, so it is checked too. That reads like a
+hard blocker: every patch build changes the game, so every recording would be single-use.
 
-```cpp
-if (((_recordMode == kRecorderPlayback) || (_recordMode == kRecorderUpdate)) && !checkGameHash(desc)) {
-    deinit();
-    error("playback:action=error reason=\"\"");
-}
-```
+⭐ **It is not, and the reason is how we install patches.** They go in as **loose `*.SCR` patch
+files** beside an untouched `RESOURCE.000/.001/.MAP`, and the detection MD5s cover the volumes.
+So the hash is *identical across patch builds*. Measured, not assumed: one recording replayed
+against two game dirs whose `0/12/18/203/204/206.SCR` all differ — the gate did not fire and
+playback proceeded.
 
-`fast_playback` is `kRecorderPlayback` plus a speed flag, so it is checked too.
+`tools/scummvm-patches/0003-*.patch` makes the gate optional anyway
+(`--record_ignore_game_hash=true`), as insurance for a build that ever rewrites the volumes. It
+defaults to upstream behaviour.
 
-**Every new patch build changes the game files, so it invalidates every recording.** That is the
-opposite of what a patch-regression suite needs. `update` mode can re-stamp the hashes, but it
-cannot make a replay meaningful when the *scripts* underneath it changed — the events are the same
-and the game's responses may not be.
+⚠️ What that does **not** buy: a replay is not automatically *meaningful* across a script change.
+The events replay identically; the game's responses may not. It is evidence only where the
+interaction sites are unchanged — which for guard wraps (they wrap in place, they do not move
+objects) is usually true, and is checkable from the emitted source.
 
-So the recorder is an excellent fit for "does this engine change break a game" — which is what
-upstream uses it for — and an awkward one for "does this new patch build still refuse the pie". It
-is worth trying for a build we intend to keep, and it is not a drop-in regression harness for a
-patch set that changes on every iteration.
+### What is worth taking from it
+
+Two hooks, and they are exactly what the console-driven harness lacks:
+
+* **`EventRecorder` is a `Common::EventSource`.** During playback its `pollEvent()` *supplies*
+  events to the engine, and it `warpMouse`es to match. That is deterministic input injection
+  through the engine's own pipeline — no XTEST, no window focus, no dropped keystrokes.
+* **`processMillis()` intercepts `getMillis()`** and returns `_fakeTimer`, driving
+  `_timerManager->handler()` itself. The engine's clock becomes *controllable* — which is
+  precisely the thing that made the guard interaction unreliable, since a timed dialog could never
+  be made to expire on demand.
+
+A recording also stores `randomSourceRecords` (RNG seeds), which is the third leg of determinism.
+
+⚠️ **Practical detail learned the hard way**: record a session that ends by QUITTING the game.
+Playback does not stop when the events run out — it keeps running — so a recording made by killing
+the process never terminates on replay, and the exit-code oracle that
+`run_event_recorder_tests.py` relies on is meaningless.
 
 Also captured: the recording stores `randomSourceRecords` (RNG seeds) and periodic screenshots
 with their MD5s, which is what makes a replay deterministic.
