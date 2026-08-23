@@ -122,6 +122,87 @@ def test_wrapper_shapes():
     T.MODE = None
 
 
+def test_deny_claims_the_event():
+    """THE REFUSAL MUST CONSUME THE EVENT EXACTLY AS THE ACTION IT REPLACES DID.
+
+    The deny branch is entered precisely where stock would have run the body. If that body
+    ended by claiming the event, stock's dispatch stopped there -- so a refusal that does not
+    claim RESUMES a dispatch stock had already ended, and every later cast member gets the same
+    click. KQ5's toy shop is the measured case: four Props (`rArm`, `theMouth`, `lArm`,
+    `toyHead`) each forward `handleEvent` to `toyMaker` verbatim, so the unclaimed refusal comes
+    straight back to the same guard -- by which time its own `(|= <warned bit>)` has run, the
+    lite allow-test is true, and ONE CLICK BOTH REFUSES AND SELLS. Measured in mode FULL, where
+    the allow-test can never be true: three "Better not." boxes from one click at the toy shop
+    against one at the single-handler bakery (tools/probes/kq5_toyshop_double_fire.py).
+
+    The claim is COPIED FROM THE BODY, never synthesized: five of the emitted sites sit in a
+    `doit`, which has no event at all, and the parameter is not always spelled `param1`. A body
+    that does not unconditionally claim gets no claim -- rm054's grate claims OUTSIDE the wrap
+    and rm032's sled claims only under `(not local40)`, and inventing one for either would stop
+    a dispatch stock let run."""
+    print("\n-- guarded_wrap: the deny path consumes the event as the body did --")
+    guard = "(not (gEgo has: 9))"
+    refuse = "(proc255_0 {Not yet!})"
+
+    def deny_of(text):
+        """The deny branch: everything after the LAST refusal."""
+        return text[text.rindex(refuse) + len(refuse):]
+
+    _fake_mode()
+    claiming = "(gRoom setScript: getSled)\n(param1 claimed: 1)"
+    w = T.guarded_wrap(guard, claiming, refuse, site=T._ModeSite())
+    # ⛔ NO `detail` ON THE DECLARED-RED CHECKS. `run_tests.CHECK` captures the whole line
+    # after `[FAIL]`, so an appended `  -- <the wrapper text>` becomes part of the name and the
+    # KNOWN_RED key stops matching -- the runner then reports the same check as UNEXPECTED
+    # FAILURE and RED WENT GREEN at once. Print the wrapper by hand when debugging instead.
+    check("a body that claims makes the refusal claim too",
+          "(param1 claimed: 1)" in deny_of(w))
+    check("...exactly once, and the body's own two are untouched",
+          w.count("(param1 claimed: 1)") == 3)
+
+    T.MODE = None
+    c = T.guarded_wrap(guard, claiming, refuse)
+    check("the classic (mode-unconfigured) wrap claims on its deny path too",
+          "(param1 claimed: 1)" in deny_of(c))
+    _fake_mode()
+
+    # ...and the three shapes that must NOT gain a claim.
+    silent = "(proc0_2)\n(gRoom setScript: enterGrate)"
+    w = T.guarded_wrap(guard, silent, refuse, site=T._ModeSite())
+    check("a body that never claims gets no claim (rm054's grate claims outside the wrap)",
+          "claimed:" not in w, w)
+
+    doit = "(gEgo setMotion: 0)\n(= local3 1)"
+    w = T.guarded_wrap(guard, doit, refuse, site=T._ModeSite())
+    check("a doit body -- no event in scope -- gets no claim", "claimed:" not in w, w)
+
+    conditional = "(if (not local40)\n\t(param1 claimed: 1)\n\t(gEgo setScript: useSled)\n)"
+    w = T.guarded_wrap(guard, conditional, refuse, site=T._ModeSite())
+    check("a body that claims only on SOME path gets no claim (rm032's sled)",
+          w.count("(param1 claimed: 1)") == 2, w)
+
+    unclaim = "(param1 claimed: 0)"
+    w = T.guarded_wrap(guard, unclaim, refuse, site=T._ModeSite())
+    check("an explicit UN-claim is not a claim to copy",
+          "(param1 claimed: 1)" not in w, w)
+
+    # the parameter is not always spelled `param1`
+    named = "(gRoom setScript: getSled)\n(evt claimed: 1)"
+    w = T.guarded_wrap(guard, named, refuse, site=T._ModeSite())
+    check("the claim is copied from the body, so a differently-named event carries",
+          "(evt claimed: 1)" in deny_of(w) and "param1" not in w)
+
+    # NESTED WRAPS -- boatRegion stacks three guards on one statement. Once the inner deny
+    # claims, EVERY path through the inner emission claims, so the outer refusal must too.
+    inner = T.guarded_wrap("(gEgo has: 30)", claiming, refuse, site=T._ModeSite())
+    outer = T.guarded_wrap(guard, inner, refuse, site=T._ModeSite())
+    check("a body whose every arm claims (a nested guard) makes the outer refusal claim",
+          outer.count("(param1 claimed: 1)") == 2 * inner.count("(param1 claimed: 1)") + 1)
+    check("nested wrap balanced", _balanced(outer))
+    check("every deny shape stays balanced",
+          all(_balanced(x) for x in (c, w, inner, outer)))
+
+
 def test_ui_installers():
     print("\n-- UI installers on the real game files --")
     scratch = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build",
@@ -557,6 +638,7 @@ def test_review_defects():
 
 def run():
     test_wrapper_shapes()
+    test_deny_claims_the_event()
     test_review_defects()
     test_ui_installers()
     test_mode_stays_out_of_the_surface()
