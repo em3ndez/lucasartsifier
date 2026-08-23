@@ -306,6 +306,48 @@ reach for first.
 (For the record, ScummVM's engine testing is otherwise buildbot + screenshot-diff regression, and
 the Director engine has its own corpus of test movies. It is not all manual.)
 
+### Where the documentation is
+
+There is no tutorial as such. What exists:
+
+| source | what it gives |
+|---|---|
+| **`wiki.scummvm.org/index.php/Event_Recorder`** | the canonical page, linked from ScummVM's own docs. ⚠️ It sits behind Anubis anti-bot and would not fetch for me — read it in a browser. |
+| `doc/docportal/advanced_topics/command_line.rst` (in-tree) | the authoritative option table, and the source of the wiki links. Also published at `docs.scummvm.org/en/latest/advanced_topics/command_line.html` |
+| **`devtools/run_event_recorder_tests.py`** (in-tree) | the closest thing to a tutorial: its header comment is a working headless recipe — `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy SCUMMVM_BIN=./scummvm python3 devtools/run_event_recorder_tests.py --xunit-output=... --filter="*monkey*"` |
+| `gui/EventRecorder.cpp`, `common/recorderfile.{h,cpp}` | the actual semantics, which is where the details below came from |
+| GSoC 2012 blog (`jakimushka.blogspot.com`) and bug **#7247** | the design history: this began as a GSoC testing-framework project |
+
+The modes: `record`, `playback`, `fast_playback`, `update`, `info`, `passthrough`. `info` prints a
+recording's author/name/description. `update` replays and **re-writes the stored hashes**.
+
+### ⛔ The constraint that decides whether we can use it
+
+A recording stores the **MD5 of the game's own files** (`hashRecords`, set from the detection
+entry), and on playback a mismatch is not a warning — it is fatal:
+
+```cpp
+if (((_recordMode == kRecorderPlayback) || (_recordMode == kRecorderUpdate)) && !checkGameHash(desc)) {
+    deinit();
+    error("playback:action=error reason=\"\"");
+}
+```
+
+`fast_playback` is `kRecorderPlayback` plus a speed flag, so it is checked too.
+
+**Every new patch build changes the game files, so it invalidates every recording.** That is the
+opposite of what a patch-regression suite needs. `update` mode can re-stamp the hashes, but it
+cannot make a replay meaningful when the *scripts* underneath it changed — the events are the same
+and the game's responses may not be.
+
+So the recorder is an excellent fit for "does this engine change break a game" — which is what
+upstream uses it for — and an awkward one for "does this new patch build still refuse the pie". It
+is worth trying for a build we intend to keep, and it is not a drop-in regression harness for a
+patch set that changes on every iteration.
+
+Also captured: the recording stores `randomSourceRecords` (RNG seeds) and periodic screenshots
+with their MD5s, which is what makes a replay deterministic.
+
 ## Two transports, and the line between them
 
 `tools/build_text_scummvm.sh` builds a ScummVM with `--enable-text-console`, whose SCI debugger
