@@ -40,6 +40,7 @@ def boot(c, rounds=12, log=print):
 # and it dies sending Room messages to a Region. See `_rooms.py`.
 SHOP_REGIONS = {203: 1, 204: 2, 205: 3}      # script number -> the global313 value that loads it
 SHOP_ROOM = 5
+BOUNCE_ROOM = 4                              # the town square, room 5's own neighbour
 
 
 def goto(c, room, settle=6.0, log=print):
@@ -55,6 +56,19 @@ def goto(c, room, settle=6.0, log=print):
         c.setg(313, region)
         target = SHOP_ROOM
         log("  script %d is a REGION of room %d; global313=%d" % (room, SHOP_ROOM, region))
+
+    # ⛔ A room change to the room you are ALREADY in is a no-op. The game acts on global 13 only
+    # when it differs from global 11 (`(if (!= global13 global11) (self newRoom: global13))`), so
+    # `room 5` while standing in room 5 changes nothing -- and for the shops that matters, because
+    # the shop you are in is chosen by global313 AT init. Switching from the tailor to the toy shop
+    # therefore silently leaves you in the tailor, with `?toyMaker` simply not existing. Bounce out
+    # and back so init runs again.
+    if c.room() == target:
+        log("  already in room %d; bouncing via %d so init re-runs" % (target, BOUNCE_ROOM))
+        c.cmd("room %d" % BOUNCE_ROOM)
+        c.resume(settle)
+        c.open()
+
     c.cmd("room %d" % target)
     c.resume(settle)
     c.open()
@@ -102,31 +116,56 @@ def nsrect(c, obj, tries=6, log=print):
     raise RuntimeError("%s never got an nsRect" % obj)
 
 
-def offer(c, event_addr, target, item, box):
-    """Hand `item` to `target` the way a click does.
+def new_event(c, event_class_addr):
+    """A fresh Event, built for ONE interaction.
 
-    A handler wants an event that is type 16384, carries message 4, and lands inside the target's
-    nsRect (`proc255_5` is a bounding-box test). All three are writable, so a click is
-    constructible. Returns whatever the game printed (see Console.said)."""
+    ⛔ Do not cache this across a room change. `Event new:` returns a CLONE, and clones are
+    reclaimed when the room changes -- the address stays syntactically valid, so the next `send`
+    reaches whatever now lives there and the game dies with
+
+        [kq5 5/203 tailor::handleEvent]: Send to invalid selector 0x4c (claimed) of object at 0028:000b!
+
+    which is a crash several rows away from the caching that caused it. Reusing one event was
+    tried as a speed-up (it saves three typed commands per offer) and this is what it bought."""
     import re
-    cx = (box["nsLeft"] + box["nsRight"]) // 2
-    cy = (box["nsTop"] + box["nsBottom"]) // 2
-    c.cmd("send %s curInvIcon ?%s" % (c.gaddr(69), item))
-    raw = c.send(event_addr, "new")[1]
+    raw = c.send(event_class_addr, "new")[1]
     m = re.search(r"Value returned:\s*([0-9a-f]{4}:[0-9a-f]{4})", raw, re.I)
     if not m:
         raise RuntimeError("Event new: returned nothing: %r" % raw[:200])
     ev = m.group(1)
-    for sel, val in (("type", 16384), ("message", 4), ("x", cx), ("y", cy), ("claimed", 0)):
-        c.cmd("send %s %s %d" % (ev, sel, val))
+    c.cmd("send %s type 16384" % ev)
+    c.cmd("send %s message 4" % ev)
+    return ev
+
+
+def offer(c, event_class_addr, target, item, box, aim=None):
+    """Hand `item` to `target` the way a click does.
+
+    A handler wants an event that is type 16384, carries message 4, and lands inside the target's
+    nsRect (`proc255_5` is a bounding-box test). All three are writable, so a click is
+    constructible. `aim` is the (x, y) already set on this event, so a run of offers at the SAME
+    target does not re-send them. Returns whatever the game printed (see Console.said)."""
+    cx = (box["nsLeft"] + box["nsRight"]) // 2
+    cy = (box["nsTop"] + box["nsBottom"]) // 2
+    ev = new_event(c, event_class_addr)            # fresh EVERY time -- see new_event's note
+    c.cmd("send %s x %d" % (ev, cx))
+    c.cmd("send %s y %d" % (ev, cy))
+    c.cmd("send %s claimed 0" % ev)                # a handler that ran will set this to 1
+    c.cmd("send %s curInvIcon ?%s" % (c.gaddr(69), item))
     c.said()                                       # drop whatever the setup printed
     c.cmd("send %s handleEvent %s" % (target, ev))
     c.resume(1.2)
-    c.key("Return", n=2, settle=0.6)               # a refusal is a print; dismiss it
+    c.key("Return", n=2, settle=0.5)               # a refusal is a print; dismiss it
     import time as _t
-    _t.sleep(1.0)
+    _t.sleep(0.8)
     c.open()
-    return c.said()
+    # ⭐ `claimed` separates the two ways an offer can look like nothing happened: 1 means the
+    # handler RAN and this is a real verdict about the guard; 0 means the event never got past
+    # `(or (param1 claimed:) (not (== (param1 type:) 16384)) (not (proc255_5 self param1)))` --
+    # a probe aiming problem, not a guard problem. Without it the two are indistinguishable and
+    # an aiming bug reads as a failing guard.
+    claimed, _ = c.send(ev, "claimed")
+    return c.said(), (cx, cy), claimed
 
 
 def wait_spent(c, ego, item, cycles=6, slice_s=1.5, log=print):

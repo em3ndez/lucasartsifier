@@ -192,7 +192,7 @@ class Console:
     def _kc(self, name):
         return self.d.keysym_to_keycode(XK.string_to_keysym(name))
 
-    def tap(self, name, mods=(), hold=0.035, settle=0.05):
+    def tap(self, name, mods=(), hold=0.018, settle=0.022):
         mk = [self._kc(m) for m in mods]
         for m in mk:
             xtest.fake_input(self.d, X.KeyPress, m)
@@ -210,7 +210,7 @@ class Console:
         for _ in range(n):
             self.tap(name, settle=settle)
 
-    def type(self, s, settle=0.05):
+    def type(self, s, settle=0.022):
         for ch in s:
             if ch in _SHIFTED:
                 self.tap(_SHIFTED[ch], mods=("Shift_L",), settle=settle)
@@ -364,8 +364,30 @@ class Console:
         seg, off = self.gvar(n)
         return "%04x:%04x" % (seg, off)
 
-    def setg(self, n, value):
-        return self.cmd("vv g %d %d" % (n, value))
+    def setg(self, n, value, tries=3):
+        """Write a global and READ IT BACK.
+
+        ⛔ A dropped keystroke does not always produce an error. `vv g 313 1` with one character
+        lost is `vv g 31 1` -- a perfectly valid command that writes a DIFFERENT global, and the
+        retry-on-"Unknown command" net does not see it. Verifying the write is the only thing that
+        catches that class, and a corrupted write to an arbitrary global is exactly the kind of
+        thing that kills a game several steps later."""
+        for _ in range(tries):
+            self.cmd("vv g %d %d" % (n, value))
+            if self.gint(n) == value:
+                return value
+            time.sleep(0.3)
+        raise RuntimeError("global%d would not take the value %d" % (n, value))
+
+    def errors(self, n=6):
+        """Recent ScummVM error lines from the game's own stdout -- the precise reason a probe's
+        window vanished, which the X error alone never tells you."""
+        try:
+            txt = open(self.log_path, errors="replace").read()
+        except Exception:                          # noqa: BLE001
+            return []
+        return [l for l in txt.splitlines()
+                if "invalid selector" in l or l.startswith("[kq") or "Error" in l][-n:]
 
     def send(self, obj, selector, *args):
         """`send`, returning the printed 'Value returned' as an int where there is one."""

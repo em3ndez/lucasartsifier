@@ -49,7 +49,7 @@ log("ego box %s" % box)
 # grading on a channel that has never produced output would fail a guard that is behaving.
 ok = True
 for attempt in (1, 2):
-    said = offer(c, EVENT, ego, "Pie", box)
+    said, _aim, claimed = offer(c, EVENT, ego, "Pie", box)
     bit = bool(c.gint(WARN_G) & BIT)
     has = c.send(ego, "has", PIE)[0]
     want_bit, want_has, want_msg = (True, 1, REFUSE) if attempt == 1 else (True, 0, WARNED)

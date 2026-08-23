@@ -54,7 +54,7 @@ ok = True
 for item, num, bit in SITES:
     log("\n===== %s (item %d, bit %#06x) =====" % (item, num, bit))
     for attempt in (1, 2):
-        said = offer(c, EVENT, "?toyMaker", item, box)
+        said, _aim, claimed = offer(c, EVENT, "?toyMaker", item, box)
         set_bit = bool(c.gint(WARN_G) & bit)
         # attempt 1 refuses: bit set, item KEPT. attempt 2 warns and lets it go: item spent --
         # but the toymaker's disposal is DEFERRED into getSled's changeState, so the second

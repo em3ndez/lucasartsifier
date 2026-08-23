@@ -119,10 +119,15 @@ Refusal is **"Just kidding! You hold on to it because you still need it."**
 eagle). Save first, or do them last.
 
 ## B — Cat & dog scenes (3 sites)
+
+⛔ **Corrected 2026-08-22.** LB1 and LB2 had their items the wrong way round here: the emitted
+source puts the **Lamb** on `$0040` and the **Fish** on `$2000`, not the reverse. Derived from
+`build/<patch>/patch_project/src/rm006.sc` via `tools/probes/_sites.py`, which is where this table
+should have come from in the first place.
 | ✓ | # | bit | Where | Do (twice) | Expect on the 2nd |
 |---|---|---|---|---|---|
-| ☐ | LB1 | 403 $0040 | rm6, during the chase | offer the **Fish (5)** | warned, **the fish goes to the cat** (and the bear at rm11 then has none) |
-| ☐ | LB2 | 403 $2000 | rm6 | offer the **Lamb (19)** | warned, the lamb is spent |
+| ☐ | LB1 | 403 $0040 | rm6, during the chase | offer the **Leg of Lamb (19)** | warned, the lamb goes to the cat |
+| ☐ | LB2 | 403 $2000 | rm6 | offer the **Fish (5)** | warned, **the fish goes to the cat** (and the bear at rm11 then has none); this bit is shared with `catStrip` |
 | ☐ | LB6 | 403 $0020 | rm12 dog | offer the **Lamb (19)** | warned, the lamb is spent |
 
 ## C — Kidnap (1 site)
