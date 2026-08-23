@@ -704,3 +704,151 @@ Two controls, in this order, because the first conclusion drawn without them was
 Claude driving, and now driving an INTERACTION rather than only state — but still Claude, not a
 person playing. `guard-modes-play-verified` and the play-confirmed rows in the test plans remain
 the user's own playing and stay that way.
+
+---
+
+# ⭐ Converting the rows — 2026-08-23 (later)
+
+The transport was proven on one row. Turning it on the whole KQ5 guard estate found **five
+things standing between a scripted click and a true row**, four of which had been silently
+faking results, and one real defect in the shipped patch.
+
+`tools/probes/kq5_lite_scripted.py` is the suite. Everything it uses — which bit, which item,
+which object, which sentences, which preconditions — is **read out of the emitted patch source**
+by `tools/probes/_sites.py`, never transcribed from a test plan.
+
+## The five things a click needs, and how each one lied
+
+### 1. The icon bar must be DOWN, or the game is not running at all
+
+`IconBar:handleEvent` opens the bar whenever there is no event and the mouse is in the top strip,
+and `IconBar:doit` then spins `(while (& state $0020) ... GetEvent ... dispatchEvent)`. While that
+loop runs **`Game:doit` never gets a cycle** — and `Game:doit` is both what performs
+`(if (!= global13 global11) (self newRoom: global13))` and what hands events to the room.
+
+The scripted-input transport starts its virtual mouse at the top left, so the bar came up by
+itself before a probe had done anything. Measured, one variable at a time:
+
+| | `global11` | bar `state` |
+|---|---|---|
+| `room 206`, then 6s of game time | **1** | `$0420` (shown) |
+| one `move 160 150` step | **206** | `$0404` |
+
+⭐ Which is exactly why LA6 passed and the first market row did not: `offer_script` happens to
+begin with a `move` step, and a move to open ground is what the bar reads as "the mouse left".
+LA6 dismissed the bar as a side effect of aiming. `goto` has nothing to aim.
+
+### 2. `c.room()` is the room ASKED for, not the room you are in
+
+ScummVM's `room` command prints `currentRoomNumber()`, which reads **global 13**. Writing it and
+reading it back always agrees, so it reported a bakery the game had never entered, and every
+offer aimed into that bakery was landing in room 1. The room the game is *in* is **global 11**;
+`_kq5.here()` reads that, and `goto` now raises instead of returning a number it just wrote.
+
+### 3. An nsRect is not a screen coordinate
+
+`User:handleEvent` calls `(param1 localize:)` before handing the event to anything, which
+subtracts the current port's origin; an nsRect is already in that port's coordinates. KQ5's
+picture window sits at `(0, 10)` — `window_list` says so — so a click authored at the middle of
+an nsRect is tested **ten pixels above** the middle. Every offer this harness had ever made was
+aimed high. It was invisible because the error is smaller than most targets:
+
+| target | box (y) | centre | actually tested | |
+|---|---|---|---|---|
+| baker | 63..89 | 76 | 66 | inside → the row passed |
+| tailor | 98..143 | 120 | 110 | inside → the row passed |
+| eagle | 121..138 | 129 | **119** | outside → nothing at all |
+
+⭐ Settled by sweeping the aim ±15px with **the guard's own bit** as the witness — not a box. A
+box with no text could be the object's own description (not every `proc0_29` travels through
+kStrCpy) or anything else under that point; `global403 $0080` is written by exactly one statement
+in the whole game.
+
+### 4. A cutscene left hanging turns every later click into nothing
+
+KQ5 brackets its cutscenes with two procedures in script 0:
+
+```
+(procedure (proc0_2) ... (User canControl: 0 canInput: 0) ... (global69 disable:) ...)
+(procedure (proc0_3)     (User canControl: 1 canInput: 1)     (global69 enable:) ...)
+```
+
+A row whose ALLOW path succeeds *starts a cutscene*, and the next row teleports out of that room
+before the cutscene reaches its `proc0_3`. `canInput` stays 0, so `User:handleEvent` drops every
+click outright; the bar stays disabled, so `IconBar:handleEvent` returns at its first cond arm
+without ever rewriting the mouse-down into a verb event. No box, no text, no bit — identical to a
+guard that did not fire. `_kq5.resume_play` restores what `proc0_3` restores.
+
+⛔ **Not `canControl`.** Restoring walking as well killed the game reproducibly on the next click
+in room 34: a teleported ego stands where the room never placed him. An offer is message 4;
+walking is message 1, and no row sends one.
+
+### 5. The box count must be READ, not predicted
+
+`window_list` names the open SCI Windows, and a message box is one of them. `drain_boxes` presses
+Return once per box that is actually open. Both ways of getting a predicted count wrong were
+observed to fake a guard result: one too few parks the arm at `Dialog::doit` so its effects land
+in the *next* attempt's window; one too many starts a fresh offer, because the item is still on
+the cursor. A message box also **blocks a teleport** — `Game:doit` is not running while one is up
+— which is how room 32's hunger warning wedged a whole run into twelve identical failures.
+
+## What `_sites.py` now derives per site
+
+* the bit, the file, and **which method the write sits in** — `handleEvent` is an offer a click
+  can reach, `doit` is a positional guard polling `onControl`/`edgeHit` that no click ever will.
+  rm032 writes the same bit from both, so the owner's name cannot tell them apart.
+* the item number, and the item's instance **name** from KQInv's own `(global9 add: ...)` list
+* the object a click must land on — **not always the arm's owner**: rm032's sled is used ON
+  GRAHAM, and the site says so with `(proc255_5 global0 param1)`
+* the guard's two sentences, refusal and warning, distinguished by spelling rather than order
+* every **precondition, with polarity**, computed from which side of each enclosing `else` the
+  write falls on, plus the conds around the target's own `init:`
+
+Polarity is the whole point. `(global0 has: 29)` must be left alone at the toy shop, where it
+only picks between two spellings of the *original action* — forcing it there would stop the allow
+path spending the item and report a working guard as broken.
+
+Preconditions it can arrange: item ownership (both polarities), inventory, KQ5 flags (bit `N%16`
+of global `129 + N/16`, read off `localproc_0`'s own arithmetic), `(== globalN K)`, detail level,
+and first-time counters like the lamb's `(== (++ global316) 1)`. Anything else is **reported per
+row**, never dropped.
+
+## ⛔⛔ AND A DEFECT IN THE SHIPPED PATCH: the deny path does not claim the event
+
+`wrap_forbidden_case` emits
+
+```
+(if (not (global0 has: 11))
+    <the original action, which ends (param1 claimed: 1)>
+ else
+    (if <allow>
+        (if (== global402 1) (proc255_0 {You have been warned!}))
+        <the original action, which ends (param1 claimed: 1)>
+     else
+        (proc255_0 {Better not. You are going to need that.})
+        (|= global403 $0010)))          ; <- NO (param1 claimed: 1)
+```
+
+so on the DENY path the event stays **unclaimed** and `User:handleEvent` keeps walking the cast.
+Where a second cast member hands the same click back to the same handler, the refusal's own
+`(|= ...)` has already run by then, `<allow>` is now true, and the item goes — **one click both
+refuses and sells**, and the player never gets the second thought Lite promises them.
+
+The toy shop has four Props sitting on top of the toymaker that forward to him verbatim:
+
+```
+(instance rArm of Prop ... (method (handleEvent param1) (toyMaker handleEvent: param1)))
+(instance theMouth ... same)  (instance lArm ... same)  (instance toyHead ... same)
+```
+
+Observed at all three toyShop bits, at rm032 (which has two owners for its bit) and at rm034:
+
+```
+DENY : boxes=2 bit=True has=0 text=True
+       said=['Better not. You are going to need that.', 'You have been warned!']
+```
+
+The bakery, which has one baker and no forwarding Props, raises exactly one box and keeps the
+item. `tools/probes/kq5_toyshop_double_fire.py` is the control that separates this from the other
+reading (the dismissing Return being re-dispatched as a fresh offer): **mode Full**, where
+`<allow>` can never be true, so two refusals from one click can only mean two dispatches.

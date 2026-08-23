@@ -664,10 +664,14 @@ def offer_script(c, target, item, tag, boxes=None, settle=2500, delay=150, log=p
     cx = (box["nsLeft"] + box["nsRight"]) // 2 + ox
     cy = (box["nsTop"] + box["nsBottom"]) // 2 + oy
     c.said()                                            # drop the setup's chatter
-    base = len(c.windows())
-    if base != idle_windows(c):
-        log("  ⚠️ %d window(s) open before the offer, expected %d -- something is still talking"
-            % (base, idle_windows(c)))
+    if box_open(c):
+        # ⛔ CLEAR THE SCREEN FIRST. A box that is already up when the click arrives eats it --
+        # a click is one of the two things that dismiss a `Dialog` -- so the offer is spent on
+        # the dismissal and the row reads as a guard that did not fire. Room 32 raises a hunger
+        # warning on its own while a row is being set up, and that is exactly what happened.
+        drained, k = drain_boxes(c, tag + "_pre", log=log)
+        log("  ⚠️ %d box(es) were already open before the offer; dismissed them first %s"
+            % (k, drained))
 
     # Authored HERE, not in a file: where to click is a live nsRect.
     c.cmd("script clear")
