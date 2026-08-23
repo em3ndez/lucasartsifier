@@ -26,8 +26,14 @@ opt-in and defaults to upstream behaviour.
 and the game's responses may not. Treat a warned replay as evidence only when the interaction
 sites are unchanged.
 
+⚠️ THE STACK ORDER MATTERS. This patch used to carry a COPY of 0002's ImGui build fix, which
+meant 0002 and 0003 could not both be applied -- `git apply` failed on the second one, and
+build_recorder_scummvm.sh papered over it by skipping 0002 whenever EventRecorder.cpp was already
+modified. The duplicate hunks are gone; apply 0002 first and this on top.
+
 FOR LOCAL DEBUGGING ONLY.
-APPLY WITH: (cd tools/scummvm-ref && git apply ../scummvm-patches/0003-*.patch)
+APPLY WITH: (cd tools/scummvm-ref && git apply ../scummvm-patches/0002-*.patch \
+                                  && git apply ../scummvm-patches/0003-*.patch)
 
 diff --git a/base/commandLine.cpp b/base/commandLine.cpp
 index c29d1eb0..af239f8c 100644
@@ -73,23 +79,4 @@ index f8ec2dd3..9ffe7439 100644
 +		}
  	}
  }
- 
-@@ -859,6 +875,10 @@ void EventRecorder::deleteTemporarySave() {
- 	_temporarySlot = -1;
- }
- 
-+#ifndef USE_IMGUI
-+// LOCAL BUILD FIX -- no ImGui, so the ImGui recorder UI is simply never enabled.
-+bool EventRecorder::isImGuiRecorderEnabled() const { return false; }
-+#else
- bool EventRecorder::isImGuiRecorderEnabled() const {
- #ifdef USE_IMGUI
- 	return debugChannelSet(-1, kDebugImGui);
-@@ -866,6 +886,7 @@ bool EventRecorder::isImGuiRecorderEnabled() const {
- 	return false;
- #endif
- }
-+#endif
- 
- #ifdef USE_IMGUI
  
