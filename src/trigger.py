@@ -26,9 +26,9 @@ import sys
 from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(__file__))
-from sexpr import (code_finditer, code_search, depth1_else,  # noqa: E402
-                   form_chain, head_of, line_indent, mark_line, read_file, skip_noncode,
-                   statement_span, Sym, Str, Said)
+from sexpr import (body_forms, code_finditer, code_search, depth1_else,  # noqa: E402
+                   form_chain, head_of, line_indent, mark_line, noncode_spans, read_file,
+                   skip_noncode, statement_span, Sym, Str, Said)
 
 CONTROLLABLE_METHODS = {"handleEvent", "doVerb"}
 
@@ -137,6 +137,88 @@ def stock_and(cond):
     return "(and (not (== global%d 2)) %s)" % (MODE["g"], cond)
 
 
+# ⛔ `claimed: 0` IS AN UN-CLAIM, not a claim -- KQ5's toy shop spells one (`(28 (param1
+# claimed: 0))`, the case that deliberately hands the click on). Only a non-zero write ends the
+# dispatch, so only a non-zero write may be copied.
+_CLAIM_FORM = re.compile(r"^\(\s*([A-Za-z_][\w-]*)\s+claimed:\s*([^\s()]+)\s*\)$", re.S)
+
+# A body that can leave early skips a claim written after the exit, so "the claim is at top
+# level, therefore it always runs" stops being true. MEASURED AT THE EMITTER, 2026-08-23: 0 of
+# the 53 bodies `guarded_wrap` is handed across all five games contains either word, so this
+# costs no site today and keeps the reasoning honest the day one does.
+# ⛔ Measured at the EMITTER, not by re-reading the finished tree: a scan of the emitted text
+# mis-attributed two of KQ5 Main's RETRACTION sites -- a different emitter, a different shape --
+# as wrapped bodies carrying a `(return)`, and they are neither. [[instruments-lie-run-the-control]]
+_EARLY_EXIT = re.compile(r"\(\s*(?:return|break)\b")
+
+
+def _always_claims(text, lo, hi, spans):
+    """The event-claim that EVERY path through the body region `[lo, hi)` performs, verbatim --
+    or None when some path does not claim.
+
+    Read it as: what did this body do to the event? A statement at top level runs
+    unconditionally, so a claim there is the answer. Otherwise the only other way every path can
+    claim is a trailing two-armed `(if ... else ...)` where both arms do -- which is exactly the
+    shape a guard wrapped around an already-guarded statement leaves behind (boatRegion stacks
+    three). A `cond`/`switch` is deliberately NOT walked: without a proven default arm it can
+    fall through claiming nothing, and the honest answer there is "I cannot tell"."""
+    if _EARLY_EXIT.search(text, lo, hi):
+        return None
+    forms = body_forms(text, lo, hi, spans)
+    for (s, e) in forms:
+        m = _CLAIM_FORM.match(text[s:e])
+        if m and m.group(2) != "0":
+            return text[s:e]
+    if not forms:
+        return None
+    s, e = forms[-1]
+    if text[s] != "(" or head_of(text, s) != "if":
+        return None
+    els = depth1_else(text, s, e, spans)
+    if els is None:
+        return None                                # a one-armed `if` skips its body entirely
+    k = s + 3
+    while k < e and text[k] in " \t\n":
+        k += 1
+    cond = body_forms(text, k, e, spans)
+    if not cond:
+        return None
+    then_claim = _always_claims(text, cond[0][1], els, spans)
+    else_claim = _always_claims(text, els + 4, e - 1, spans)
+    # Either arm's spelling serves: both name the SAME event -- a method has one event
+    # parameter -- and any non-zero write ends the dispatch, so the two can differ only in how
+    # they spell true. An arm that writes `claimed: 0` is not a claim at all and has already
+    # returned None above, which is what makes taking one arm's text safe here.
+    return then_claim if (then_claim and else_claim) else None
+
+
+def body_claim(body):
+    """The claim a refusal standing in for `body` must repeat, or None.
+
+    ⭐ THE REFUSAL CONSUMES THE EVENT EXACTLY AS THE ACTION IT REPLACES DID. The deny branch is
+    entered precisely where stock would have run `body`; if that body claimed the event, stock's
+    dispatch ENDED there, and a refusal that does not claim RESUMES a walk of the cast that
+    stock had already stopped. KQ5's toy shop is where that shows: `rArm`, `theMouth`, `lArm`
+    and `toyHead` each forward `handleEvent` to `toyMaker` verbatim, so the unclaimed refusal
+    returns to its own guard with its `(|= <warned bit>)` already written and the lite
+    allow-test now true -- one click both refuses and sells, and lite gives the player no second
+    thought at all. Measured in mode FULL, whose allow-test can never be true: three refusals
+    from one click at the toy shop against one at the single-handler bakery
+    (`tools/probes/kq5_toyshop_double_fire.py`).
+
+    ⛔ THE CLAIM IS COPIED, NEVER SYNTHESIZED. Five of the emitted sites sit in a `doit`, which
+    has no event in scope at all, and the parameter is not always spelled `param1`. Copying the
+    body's own statement answers both without a table of exceptions -- a body with no claim to
+    copy is a body whose refusal must not claim either.
+
+    ⛔ AND ONLY AN UNCONDITIONAL ONE. Claiming where stock sometimes did not would silence a
+    sibling handler stock let run, which is the mirror of this same bug. rm054's grate claims
+    OUTSIDE the wrap -- the deny path falls through to it already -- and rm032's sled claims
+    only under `(not local40)`; neither gets one."""
+    text = body.strip()
+    return _always_claims(text, 0, len(text), noncode_spans(text))
+
+
 def guarded_wrap(guard_sexpr, body, refuse, site=None, deny_extra=(),
                  indent="\t\t\t", marker="; softlock-guard"):
     """The refusal-bearing wrap, in one place for every kind that says no.
@@ -154,6 +236,7 @@ def guarded_wrap(guard_sexpr, body, refuse, site=None, deny_extra=(),
                 <deny_extra lines, e.g. edgeHit resets>
                 <refuse>
                 <mark this site warned (lite only)>
+                <the body's own event claim, when the body always made one -- `body_claim`>
             )
         )
 
@@ -165,11 +248,15 @@ def guarded_wrap(guard_sexpr, body, refuse, site=None, deny_extra=(),
     2026-08-06)."""
     b = indent + "\t"
     body = body.strip()
+    # The refusal ends the click exactly where the body would have -- `body_claim`.
+    claim = body_claim(body)
     forms = site.forms() if site is not None else None
     if forms is None:
         return (f"(if {guard_sexpr}\n{b}{body}\n{indent}else\n"
                 + "".join(f"{b}{ln}\n" for ln in deny_extra)
-                + f"{b}{refuse}  {marker}\n{indent})")
+                + f"{b}{refuse}  {marker}\n"
+                + (f"{b}{claim}\n" if claim else "")
+                + f"{indent})")
     allow, warn, mark = forms
     return (f"(if {guard_sexpr}\n{b}{body}\n{indent}else\n"
             f"{b}(if {allow}\n"
@@ -179,7 +266,8 @@ def guarded_wrap(guard_sexpr, body, refuse, site=None, deny_extra=(),
             + "".join(f"{b}\t{ln}\n" for ln in deny_extra)
             + f"{b}\t{refuse}\n"
             f"{b}\t{mark}\n"
-            f"{b})  {marker}\n{indent})")
+            + (f"{b}\t{claim}\n" if claim else "")
+            + f"{b})  {marker}\n{indent})")
 
 
 def is_sym(x, n=None):

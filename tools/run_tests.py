@@ -74,34 +74,16 @@ KNOWN_RED = {
     # host's own `init` is in the SHIPPED emission (`castle.sc`) and the orphan's `script:` is
     # read at `rm054.sc:448-449`. Only the REACHABLE REFUSAL is missing, on the strength of one
     # play test. The retirement stands; the margin was overstated by exactly one condition.
-    # ⛔ OPEN DEFECT, declared 2026-08-23 with its cure known -- the shape the R1-R5 entries used.
-    # THE DENY PATH DOES NOT CONSUME THE EVENT. `trigger.guarded_wrap`'s refusal branch emits
-    # deny_extra + refuse + mark and stops; both proceed branches carry the body's own
-    # `(param1 claimed: 1)`. But the deny branch is entered exactly where stock would have run
-    # that body, so stock's dispatch ENDED there -- an unclaimed refusal resumes a walk of the
-    # cast that stock had already stopped. KQ5's toy shop measures it: `rArm`, `theMouth`,
-    # `lArm` and `toyHead` each forward `handleEvent` to `toyMaker` verbatim, so the refusal
-    # returns to its own guard with its `(|= <bit>)` already written, the lite allow-test now
-    # true -- ONE CLICK BOTH REFUSES AND SELLS, and lite gives the player no second thought at
-    # all. Mode FULL is the control (its allow-test can never be true): three refusals from one
-    # click at the toy shop, one at the single-handler bakery.
-    # ⚠️ FULL STILL HOLDS -- the item is kept, the softlock is still prevented. What is defeated
-    # is LITE's two-step. `tools/probes/kq5_toyshop_double_fire.py`.
-    # The four checks that must NOT gain a claim are GREEN already and stay that way: they pin
-    # the limits the cure may not overrun (a `doit` body has no event, rm054 claims outside the
-    # wrap, rm032 claims only under `(not local40)`, and `claimed: 0` is an un-claim).
-    "test_mode.py": {
-        "a body that claims makes the refusal claim too":
-            "the deny branch never claims; the toy shop's forwarding Props re-enter the guard",
-        "...exactly once, and the body's own two are untouched":
-            "same defect -- counted, so a cure that duplicates the body cannot pass by accident",
-        "the classic (mode-unconfigured) wrap claims on its deny path too":
-            "the mode-unconfigured shape has the same hole",
-        "the claim is copied from the body, so a differently-named event carries":
-            "the cure may not synthesize `param1`; 5 of 35 sites are in a `doit` with no event",
-        "a body whose every arm claims (a nested guard) makes the outer refusal claim":
-            "boatRegion stacks three guards on one statement; the outer refusal leaks the same way",
-    },
+    # ✅ PROMOTED 2026-08-23 -- the five "the deny path never claims the event" checks are GREEN
+    # and no longer listed. `trigger.guarded_wrap` now ends its refusal with the body's OWN claim
+    # statement, copied verbatim, whenever every path through that body made one (`body_claim`).
+    # The refusal stands where stock would have run the body, so it consumes the event exactly as
+    # the action it replaces did; KQ5's toy shop no longer re-enters its own guard through the
+    # four Props that forward `handleEvent` to `toyMaker`.
+    # Emitted-tree control against a worktree at 0679a3f: LSL2, KQ4, KQ6 and LB2 BYTE-IDENTICAL;
+    # KQ5 gains 34 `(param1 claimed: 1)` lines in 10 files and loses nothing. The four checks
+    # that must NOT gain a claim stayed green throughout and are the limit the cure may not
+    # overrun.
     "test_toll.py": {
         # ✅ PROMOTED 2026-08-16 -- "KQ5 temple strands Brass_Bottle + Gold_Coin" and "KQ5 toll
         # item is the Staff via rm214->rm18" are GREEN and no longer listed. Both demanded that
