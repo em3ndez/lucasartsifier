@@ -549,6 +549,43 @@ def port_origin(c):
     return pic["at"]
 
 
+def resume_play(c, log=print):
+    """Put the game back into the state a player is in: input on, icon bar enabled.
+
+    ⛔⛔ THIS IS WHY EVERY ROW AFTER A CUTSCENE STOPPED LANDING. KQ5 brackets its cutscenes with
+    two procedures in script 0:
+
+        (procedure (proc0_2) (global1 setCursor: global21 1) (User canControl: 0 canInput: 0)
+                             (global0 setMotion: 0) (global69 disable:) (= global102 1))
+        (procedure (proc0_3) (User canControl: 1 canInput: 1) (global69 enable:) ...)
+
+    A row whose ALLOW path succeeds starts a cutscene -- the dog's, the eagle's, the baker's --
+    and the next row teleports out of the room before that cutscene reaches its `proc0_3`. So
+    `canInput` stays 0, which makes `User:handleEvent` drop every click outright, and the icon
+    bar stays disabled, which makes `IconBar:handleEvent` return at its first cond arm
+    (`((& state $0004))`) without rewriting the mouse-down into a verb event at all.
+
+    Measured: rm030's branch answers a scripted offer when its row runs FIRST, and answers
+    nothing at any aim -- ±15 pixels, bit as the witness -- once a previous row has left a
+    cutscene hanging. Nothing about the aim or the guard changed between those two runs.
+
+    This is not manufacturing state: it is the state the game restores for itself the moment a
+    cutscene finishes, and the state a player is always in when they make an offer."""
+    user = c.gaddr(80)
+    bar = c.gaddr(69)
+    before = (c.send(user, "canInput")[0], c.send(bar, "state")[0])
+    # ⛔ `canInput` and the bar only -- NOT `canControl`. Restoring walking as well killed the
+    # game outright on the next click in room 34, reproducibly: a teleported ego stands where the
+    # room never placed him, and letting `Ego:handleEvent` act on that is a step past what a row
+    # needs. An offer is message 4; walking is message 1, and no row sends one.
+    c.cmd("send %s canInput 1" % user)
+    c.cmd("send %s enable" % bar)
+    after = (c.send(user, "canInput")[0], c.send(bar, "state")[0])
+    if before != after:
+        log("  restored play: canInput/bar state %s -> %s" % (before, after))
+    return after
+
+
 def icons(c):
     """The icon bar's icons, as [(index, address, message)].
 
@@ -611,6 +648,9 @@ def offer_script(c, target, item, tag, boxes=None, settle=2500, delay=150, log=p
     `aim` carries where the click went and the target's box before and after, so a caller can
     tell an offer that MISSED apart from a guard that did not fire.
     """
+    # ⛔ A cutscene the previous row left hanging has input off and the icon bar disabled, and
+    # both make a click vanish without trace. See resume_play.
+    resume_play(c, log=log)
     arm_item(c, item, log=log)
     # ⛔ PARK FIRST, THEN AIM. The park has to happen before the click (a shown icon bar eats it)
     # -- but a park is a stretch of GAME TIME, and half these targets walk. The tailor's own

@@ -252,6 +252,11 @@ log("  item ownership snapshot: %d items" % len(BASE_OWNERS))
 results = []
 
 
+def dead(c, e=None):
+    """Has the game process gone? Then no later row means anything."""
+    return (c.proc is not None and c.proc.poll() is not None) or "Broken pipe" in str(e or "")
+
+
 def world(c):
     """Enough of the world to tell "the guard let it through" from "nothing happened"."""
     return (here(c), c.send(c.gaddr(2), "script")[0], c.send(ego, "script")[0])
@@ -293,6 +298,14 @@ for r in rows:
         log("  SKIP: %s" % e)
         for l in c.errors():
             log("    game said: %s" % l)
+        if dead(c, e):
+            # ⛔ A dead ScummVM is not a row result. When room 46 killed the game, every later
+            # row raised "Broken pipe" and was filed as SKIP -- which reads as ten guards that
+            # could not be probed, rather than one game that fell over. Room 46 does it every
+            # time: `timers::eachElementDo` signature mismatch, shortly after a teleport in.
+            log("  ⛔⛔ SCUMMVM IS GONE. Nothing after this can be measured; the run stops.")
+            results.append((tag, "GAME DIED", str(e)))
+            break
         if "never entered room" in str(e):
             # ⛔ A room that will not accept a teleport does not just fail its own row -- every
             # row after it inherits the wedge and reports the same thing, which reads as a dozen
@@ -315,7 +328,9 @@ for r in rows:
         said, at, aim = offer_script(c, target, item, "%x_d" % r["mask"], log=log)
     except Exception as e:                  # noqa: BLE001
         log("  DENY attempt failed: %s" % e)
-        results.append((tag, "SKIP", str(e)))
+        results.append((tag, "GAME DIED" if dead(c, e) else "SKIP", str(e)))
+        if dead(c, e):
+            break
         continue
     d_bit = bool(c.gint(r["word"]) & r["mask"])
     d_has = c.send(ego, "has", r["item"])[0]
@@ -336,7 +351,9 @@ for r in rows:
         said, at, aim = offer_script(c, target, item, "%x_a" % r["mask"], log=log)
     except Exception as e:                  # noqa: BLE001
         log("  ALLOW attempt failed: %s" % e)
-        results.append((tag, "SKIP", str(e)))
+        results.append((tag, "GAME DIED" if dead(c, e) else "SKIP", str(e)))
+        if dead(c, e):
+            break
         continue
     # ⛔ Disposal is not always inline: the shops take payment inside a Script's changeState, so
     # `has:` sampled once right after the click passes for the inline sites and fails for the
@@ -364,9 +381,10 @@ for t, verdict, note in results:
     log("  %-12s %-38s %s" % (verdict, t, note))
 n = len(rows)
 counts = {v: sum(1 for _, x, _ in results if x == v) for v in
-          ("PASS", "FAIL", "NOT REACHED", "SKIP", "WEDGED")}
-log("\n  %d/%d PASS   %d FAIL   %d NOT REACHED   %d SKIP   %d WEDGED   %d never run"
+          ("PASS", "FAIL", "NOT REACHED", "SKIP", "WEDGED", "GAME DIED")}
+log("\n  %d/%d PASS   %d FAIL   %d NOT REACHED   %d SKIP   %d WEDGED   %d GAME DIED"
     % (counts["PASS"], n, counts["FAIL"], counts["NOT REACHED"], counts["SKIP"],
-       counts["WEDGED"], n - len(results)))
+       counts["WEDGED"], counts["GAME DIED"]))
+log("  ⛔ %d row(s) never ran at all -- NOT a pass and NOT a fail." % (n - len(results)))
 log("  ⚠️ and %d emitted sites are positional guards this suite does not cover at all."
     % len(elsewhere))
