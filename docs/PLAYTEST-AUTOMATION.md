@@ -277,10 +277,47 @@ Not established:
   `is_open()` now send a bare Return first so a partial line is always flushed, but that fix has
   not yet carried a full nine-row run.
 
-  The real answer is probably not more retry tuning: it is to stop typing. A ScummVM built with
-  `--enable-text-console` reads the debugger from **stdin**, which removes XTEST from the loop
-  entirely. That is a build, not a patch, and it would make every number above cheap to re-check
-  rather than something to schedule around.
+  The answer was not more retry tuning. See the next section.
+
+## Two transports, and the line between them
+
+`tools/build_text_scummvm.sh` builds a ScummVM with `--enable-text-console`, whose SCI debugger
+does `fgets(stdin)` and prints a `debug> ` prompt instead of drawing a console in the game window.
+`sci_console.py --binary <that build>` switches the whole command path to a pipe. Built and
+working, 2026-08-22.
+
+What that buys, all verified:
+
+- **No typing, so no wedges.** The prompt is the delimiter — no sentinel command, and nothing a
+  dropped character can destroy. The failure that stopped the nine-row suite cannot occur.
+- **Boot with zero clicks.** The session starts at a prompt *before the game has run an
+  instruction*, so the intro is never entered: run the VM briefly, `room 1`, done. The Sierra
+  logo and the "Skip it" dialog — the most fragile part of the keystroke path, the one that
+  needed a screenshot to debug — are simply not in the picture.
+- **Deterministic time.** `debug_countdown N` re-enters the debugger after N VM instructions
+  (it is decremented in the opcode loop, not once per drawn frame), so `resume()` is a bounded
+  run rather than a wall-clock guess, and it needs no keystroke to get control back.
+
+⛔ **Where it stops: a `send` that makes the game PRINT does not return.** `proc255_0` opens a
+modal Dialog and blocks inside the re-entrant `run_vm` — and while the text-console debugger is
+waiting on `fgets`, nothing is pumping events, so the dialog is never dismissed. The graphical
+build does not have this problem: its `_debuggerDialog->runModal()` pumps while it waits, which
+is why every guard result above was obtained on the stock binary. Injecting into the game's own
+event object instead does not help either — `User:doit` explicitly zeroes `curEvent` before every
+`GetEvent`.
+
+So the honest split today is **pipe for state, stock binary for interaction**:
+
+| | pipe (text console) | XTEST (stock) |
+|---|---|---|
+| boot to a playable room | ✅ no clicks | fragile click sequence |
+| read/write globals, resolve objects, read `nsRect` | ✅ | ✅ (slower, can wedge) |
+| advance the game | ✅ deterministic | wall-clock |
+| **offer an item / trigger a guard that speaks** | ⛔ blocks | ✅ |
+
+Also unresolved on the text build: `restore_game` exits ScummVM rather than returning (it ends in
+`cmdExit`, and arming a countdown first does not save it). Save/restore persistence therefore
+remains unverified — it is still the oldest open item in `GUARD-MODES.md`.
 
 ⚠️ **Provenance.** Everything above is Claude DRIVING, and mostly driving *state*. No probe has
 played a game. `guard-modes-play-verified` and the play-confirmed results in the test plans are the

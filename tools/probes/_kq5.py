@@ -14,9 +14,27 @@ SKIP_IT    = (258, 129)     # the cartoon warning's "Skip it"
 FIRST_ROOM = 2              # past the title/intro rooms means we are playing
 
 
+FIRST_PLAYABLE = 1          # KQ5 opens outside Graham's house; rm001.sc is a real room
+
+
 def boot(c, rounds=12, log=print):
-    """Click through the intro, then open the console once. Returns the room we landed in."""
+    """Get to a playable room. Returns the room we landed in.
+
+    Over the PIPE there is nothing to click: the session starts at a debugger prompt before the
+    game has run an instruction, so the intro is simply never entered -- run the VM briefly to
+    let script 0 initialise, then go straight to the first playable room. That removes the whole
+    Sierra-logo / "Skip it" dance, which was the most fragile part of the keystroke path and the
+    one that needed a screenshot to debug.
+    """
     import time
+    if c.stdin_mode:
+        c.resume(2)                                # let script 0 come up
+        c.cmd("room %d" % FIRST_PLAYABLE)
+        c.resume(3)
+        room = c.room()
+        log("  booted (pipe) to room %s" % room)
+        return room
+
     time.sleep(8)                                  # the Sierra logo takes no input at all
     c.click(*PLAYED_YES)
     time.sleep(2)

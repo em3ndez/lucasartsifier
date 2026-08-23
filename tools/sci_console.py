@@ -17,8 +17,14 @@ ScummVM -- the stock 2.8.0 Debian binary does this today (verified 2026-08-22).
 The script file runs with `c` (this session) in its namespace, plus `time`.
 
 Notes paid for in blood:
+  * ⭐ TWO TRANSPORTS. By default the console is typed into the game window with XTEST, which
+    works but drops keystrokes over a long run. If `scummvm` was built with
+    `--enable-text-console` the debugger reads STDIN instead, and this driver uses that
+    automatically when pointed at such a binary (`--binary`, or SCI_CONSOLE_BINARY). That takes
+    XTEST out of the command path entirely -- no dropped characters, no half-typed lines, no
+    wedges. `tools/build_text_scummvm.sh` builds one.
   * The console is MODAL -- while it is open the game is frozen. `c.resume()` ("go") lets it
-    run; `c.open()` (Ctrl+Alt+D) gets it back.
+    run; `c.open()` (Ctrl+Alt+D, or nothing at all in stdin mode) gets it back.
   * `room N` only writes global 13. The room does not change until the game LOOP runs, so a
     teleport is: `room N`, `resume()`, wait, `open()`.
   * Output is delimited with a sentinel command, not by guessing when the game went quiet.
@@ -90,20 +96,46 @@ def _bail(signum, frame):
 
 
 def stale_instances():
-    """PIDs of games a PREVIOUS driver run leaked -- matched on `sci_console` in the command
-    line, so the player's own ScummVM is never in the list and never killed."""
+    """PIDs of GAMES a previous driver run leaked.
+
+    Matched on `sci_console` in the command line so the player's own ScummVM is never touched --
+    but the EXECUTABLE has to be scummvm too. ⛔ Without that check the matcher also matches the
+    DRIVER, whose command line contains both words as soon as it is passed
+    `--binary .../scummvm`; it then killed its own process group at startup and the run simply
+    vanished with no output."""
+    me = os.getpid()
     try:
         out = subprocess.run(["ps", "-eo", "pid=,args="], capture_output=True, text=True).stdout
     except Exception:                             # noqa: BLE001
         return []
-    return [int(ln.split(None, 1)[0]) for ln in out.splitlines()
-            if "scummvm" in ln and "sci_console" in ln and "ps -eo" not in ln]
+    pids = []
+    for ln in out.splitlines():
+        parts = ln.split(None, 1)
+        if len(parts) != 2:
+            continue
+        pid, args = parts
+        exe = args.split()[0] if args.split() else ""
+        if not os.path.basename(exe).startswith("scummvm"):
+            continue                              # a python driver is not a leaked game
+        if "sci_console" in args and int(pid) != me:
+            pids.append(int(pid))
+    return pids
 
 
 class Console:
-    def __init__(self, game, game_id, title=None, ini=None, log=None, display_name=":0"):
+    # A ScummVM built with `--enable-text-console` prints this the moment the debugger takes
+    # stdin, and again on every re-entry. It is how the driver knows which transport it has.
+    _TEXT_BANNER = "Debugger entered, please switch to this console"
+    _PROMPT = "debug> "
+
+    def __init__(self, game, game_id, title=None, ini=None, log=None, display_name=":0",
+                 binary=None):
         self.game, self.id = os.path.abspath(game), game_id
         self.title = title or game_id
+        # `--binary <a text-console build>` switches the whole command path from XTEST keystrokes
+        # to a pipe. Everything else about the session is identical.
+        self.binary = binary or os.environ.get("SCI_CONSOLE_BINARY") or "scummvm"
+        self.stdin_mode = self.binary != "scummvm"
         self.ini = ini or os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                        "sci_console.ini")
         self.log_path = log or os.path.join("/tmp", "sci_console_%d.log" % os.getpid())
@@ -122,32 +154,46 @@ class Console:
         env = dict(os.environ, DISPLAY=self.display_name)
         # No graphics-backend flag on purpose: nothing here needs one, and the CPU problem it
         # was once added for (a pinned box) was LEAKED instances, which `stop()` now prevents.
-        argv = ["scummvm", "--config=" + self.ini, "-p", self.game, "--no-fullscreen"]
-        if attach_at_start:
+        argv = [self.binary, "--config=" + self.ini, "-p", self.game, "--no-fullscreen"]
+        # In stdin mode the debugger owns stdin from the first instruction, so OnStartup is not
+        # an option -- it is how the session begins, at a prompt, before the game has run at all.
+        if attach_at_start or self.stdin_mode:
             argv.append("--debugflags=OnStartup")
         argv.append(self.id)
         self._fh = open(self.log_path, "wb")
         # Its OWN process group, so teardown can kill the whole thing even if ScummVM has
         # forked helpers, and a stray kill can never reach the caller's shell.
         self.proc = subprocess.Popen(argv, stdout=self._fh, stderr=subprocess.STDOUT, env=env,
+                                     stdin=subprocess.PIPE if self.stdin_mode else None,
                                      start_new_session=True)
         _register(self)
         self._reader = open(self.log_path, "r", errors="replace")
-        self.d = display.Display(self.display_name)
-        root = self.d.screen().root
-        deadline = time.time() + timeout
-        while time.time() < deadline and self.win is None:
-            self.win = self._find(root, self.title)
-            if self.win is None:
-                time.sleep(0.5)
+
+        # The X window is REQUIRED for the keystroke transport and merely NICE for the pipe one
+        # (screenshots stay available for diagnosing a probe, but nothing routine needs them).
+        try:
+            self.d = display.Display(self.display_name)
+            root = self.d.screen().root
+            deadline = time.time() + timeout
+            while time.time() < deadline and self.win is None:
+                self.win = self._find(root, self.title)
+                if self.win is None:
+                    time.sleep(0.5)
+        except Exception:                            # noqa: BLE001 -- no X at all
+            self.d = None
         if self.win is None:
-            self.stop()
-            raise SystemExit("no window whose title contains %r appeared" % self.title)
-        g = self.win.get_geometry()
-        self.size = (g.width, g.height)
-        t = self.win.translate_coords(root, 0, 0)
-        self.origin = (-t.x, -t.y)
-        self.focus()
+            if not self.stdin_mode:
+                self.stop()
+                raise SystemExit("no window whose title contains %r appeared" % self.title)
+        else:
+            g = self.win.get_geometry()
+            self.size = (g.width, g.height)
+            t = self.win.translate_coords(self.d.screen().root, 0, 0)
+            self.origin = (-t.x, -t.y)
+            self.focus()
+
+        if self.stdin_mode:
+            self._await_prompt(timeout=timeout)      # the session starts AT a prompt
         return self
 
     def _find(self, w, needle):
@@ -275,7 +321,11 @@ class Console:
         return False
 
     def open(self, settle=1.5, tries=4):
-        """Ctrl+Alt+D, CONFIRMED open before returning.
+        """Get the console back. Over the pipe there is nothing to do -- `resume()` hands control
+        back with a countdown that re-enters the debugger by itself, so the session is always at
+        a prompt when it is not deliberately running.
+
+        Over XTEST: Ctrl+Alt+D, CONFIRMED open before returning.
 
         ⛔ Ctrl+Alt+D is a TOGGLE, not an idempotent "open". The first cut retried it whenever
         the confirmation did not come back -- so a dropped confirmation KEYSTROKE (not a dropped
@@ -287,6 +337,8 @@ class Console:
         the Sierra logo, a cutscene, or a modal game dialog is simply ignored -- so `open()`
         failing usually means the BOOT is stuck, not that the console is broken, and the
         screenshot it writes on failure is the fastest way to see which."""
+        if self.stdin_mode:
+            return "pipe: always at a prompt"
         # ⛔ Do not probe before pressing. `is_open` types into whatever has focus, and if the
         # console is CLOSED that goes to the GAME as gameplay keystrokes. Press first.
         for _ in range(tries):
@@ -302,15 +354,86 @@ class Console:
             where = ""
         raise RuntimeError("the SCI console did not open (Ctrl+Alt+D x%d)%s" % (tries, where))
 
+    # ---- the pipe transport ---------------------------------------------------------
+    # How long to wait before assuming a command is blocked on a modal Print, and how often to
+    # nudge it after that.
+    DISMISS_AFTER, DISMISS_EVERY = 2.5, 1.5
+
+    def _await_prompt(self, timeout=60, dismiss=True):
+        """Read until the debugger is sitting at `debug> ` again.
+
+        The prompt IS the delimiter, so the pipe transport needs no sentinel command -- which
+        removes both the sentinel's cost and the whole class of failure where a dropped character
+        stopped it ever arriving.
+
+        ⛔ One thing the pipe cannot do by itself: a command that makes the game PRINT does not
+        return. `proc255_0` opens a modal Dialog and blocks inside the re-entrant `run_vm`, so no
+        prompt comes back until somebody dismisses it -- and a guard's refusal is exactly such a
+        print, i.e. every interesting command. So if the prompt is late, press Return at the
+        window. That is the only keystroke left in the loop, it carries no data, and the worst a
+        spurious one does is dismiss a dialog that was not there."""
+        out, start, nudged = "", time.time(), 0.0
+        deadline = start + timeout
+        while time.time() < deadline:
+            out += self._read_new()
+            if out.rstrip(" ").endswith(self._PROMPT.rstrip()) or out.endswith(self._PROMPT):
+                return out
+            if self.proc is not None and self.proc.poll() is not None:
+                raise RuntimeError("ScummVM exited while waiting for a prompt:\n%s"
+                                   % "\n".join(self.errors()))
+            now = time.time()
+            if (dismiss and self.win is not None and now - start > self.DISMISS_AFTER
+                    and now - nudged > self.DISMISS_EVERY):
+                nudged = now
+                try:
+                    self.focus()
+                    self.tap("Return", settle=0.05)
+                    self.click(160, 100, settle=0.05)   # SCI prints close on a click too, and
+                    self.tap("Escape", settle=0.05)     # some wait for one rather than a key
+                except Exception:                    # noqa: BLE001 -- window went away
+                    pass
+            time.sleep(0.02)
+        raise RuntimeError("no debugger prompt within %ss (last output: %r)" % (timeout, out[-300:]))
+
+    def _write(self, line):
+        self.proc.stdin.write((line + "\n").encode())
+        self.proc.stdin.flush()
+
+    # These console commands END the debugger session -- `cmdRestoreGame` and `cmdRestartGame`
+    # both finish with `cmdExit`, which returns false from `parseCommand` and drops out of the
+    # input loop. Over the pipe that means no prompt ever comes back, so a countdown has to be
+    # armed BEFORE they run: the game gets those instructions and the debugger takes itself back.
+    _LEAVES_DEBUGGER = ("restore_game", "restart_game", "go", "exit")
+
+    def leaves_debugger(self, line):
+        return line.split()[0] in self._LEAVES_DEBUGGER if line.split() else False
+
+    def _cmd_pipe(self, line, timeout=30, after_instructions=200000):
+        if self.leaves_debugger(line):
+            self._read_new()
+            self._write("debug_countdown %d" % after_instructions)
+            self._await_prompt(timeout)
+        self._read_new()                              # anything still in flight
+        self._write(line)
+        out = self._await_prompt(timeout)
+        answer = out.replace(self._PROMPT, "").strip("\r\n")
+        self.transcript.append((line, answer))
+        return answer
+
     _LOST = "Unknown command or variable"
 
     def cmd(self, line, timeout=25, tries=3):
         """Send one console command; return everything it printed.
 
+        Over the pipe this is a single write and a read to the next prompt -- no retries, because
+        a pipe does not drop characters. Over XTEST it is the keystroke dance below.
+
         XTEST keystrokes are not guaranteed delivery -- the console polls the event queue once
         a frame, and a dropped character turns `vmvars g 403` into a command that does not
         exist. A lost keystroke is therefore RETRIED, not returned: silently answering
         "Unknown command" for a state read would make a probe report the wrong state."""
+        if self.stdin_mode:
+            return self._cmd_pipe(line, timeout)
         for attempt in range(tries):
             # ⛔ FLUSH FIRST. A dropped Return leaves a half-typed line sitting at the prompt --
             # the console showed `) versi` with the sentinel's last character and its newline
@@ -363,8 +486,27 @@ class Console:
                     out.append(s)
         return out
 
-    def resume(self, seconds=0.0):
-        """`go` -- hand control back to the game, optionally for a fixed wall-clock slice."""
+    # Roughly how many VM instructions a second of play is worth. `debug_countdown` is decremented
+    # once per opcode (`vm.cpp` calls `onFrame()` inside the instruction loop), not once per drawn
+    # frame, so this is a conversion, not a frame rate. Only the order of magnitude matters: it is
+    # how long the game gets before the debugger takes itself back.
+    INSTR_PER_SECOND = 40000
+
+    def resume(self, seconds=0.0, instructions=None):
+        """Hand control back to the game, then TAKE IT BACK.
+
+        Over the pipe this is deterministic and needs no keystroke: `debug_countdown N` makes the
+        debugger re-enter after N instructions, so `exit` is a bounded run rather than an open
+        one. Over XTEST it is `go` plus a wall-clock sleep, and getting back in needs the hotkey.
+        """
+        if self.stdin_mode:
+            n = instructions if instructions is not None else max(
+                1, int(seconds * self.INSTR_PER_SECOND)) or 1
+            self._cmd_pipe("debug_countdown %d" % n)
+            self._read_new()
+            self._write("exit")
+            self._await_prompt(timeout=max(30, seconds * 4 + 30))
+            return
         self.type("go\n")
         if seconds:
             time.sleep(seconds)
@@ -434,6 +576,10 @@ def main(argv=None):
     ap.add_argument("--ini", default=None)
     ap.add_argument("--log", default=None)
     ap.add_argument("--keep", action="store_true")
+    ap.add_argument("--binary", default=None,
+                    help="a ScummVM built with --enable-text-console. Switches the command path "
+                         "from XTEST keystrokes to a pipe (see tools/build_text_scummvm.sh). "
+                         "Also read from SCI_CONSOLE_BINARY.")
     ap.add_argument("--attach", action="store_true",
                     help="--debugflags=OnStartup. NOTE: the console attaches before the event loop "
                          "exists, so it prints its banner but accepts NO input. Kept for "
@@ -449,7 +595,9 @@ def main(argv=None):
             except (ProcessLookupError, PermissionError):
                 pass
         time.sleep(1)
-    c = Console(a.game, a.id, a.title, a.ini, a.log).start(attach_at_start=a.attach)
+    c = Console(a.game, a.id, a.title, a.ini, a.log,
+                binary=a.binary).start(attach_at_start=a.attach)
+    sys.stderr.write("transport: %s\n" % ("pipe (stdin)" if c.stdin_mode else "XTEST keystrokes"))
     try:
         ns = {"c": c, "time": time, "__file__": os.path.abspath(a.script),
               "__name__": "__console__"}
