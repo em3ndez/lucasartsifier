@@ -110,6 +110,7 @@ class Console:
         self.display_name = display_name
         self.proc = self.d = self.win = None
         self._fh = None
+        self._said_buf = ""
         self.transcript = []
 
     # ---- lifecycle ---------------------------------------------------------------
@@ -240,7 +241,16 @@ class Console:
 
     # ---- the console -------------------------------------------------------------
     def _read_new(self):
-        return self._reader.read()
+        """Everything ScummVM has printed since the last call.
+
+        ⛔ Whatever this returns is CONSUMED. `cmd()` reads the stream to find its sentinel, so
+        anything the game printed in the meantime -- including every `bpk StrCpy log` line, i.e.
+        all the dialogue -- was gone before `said()` could look at it, and the text oracle
+        silently returned []. Keep a copy for `said()` to scan."""
+        chunk = self._reader.read()
+        if chunk:
+            self._said_buf += chunk
+        return chunk
 
     def shot(self, path):
         """The window's pixels, straight off the X server. For diagnosing a probe that got
@@ -333,10 +343,16 @@ class Console:
         return self.cmd("bpk StrCpy log" if on else "bc *")
 
     def said(self):
-        """Every string the game moved through kStrCpy since the last call."""
+        """Every string the game moved through kStrCpy since the last call to this method.
+
+        Reads the accumulator, not the stream -- see `_read_new`."""
+        self._read_new()                           # pull anything still in flight
+        buf, self._said_buf = self._said_buf, ""
         out = []
-        for line in self._SAID_LINE.findall(self._read_new()):
-            out.extend(self._SAID_STR.findall(line))
+        for line in self._SAID_LINE.findall(buf):
+            for s in self._SAID_STR.findall(line):
+                if s not in out:                   # StrCpy names src and dest; same text twice
+                    out.append(s)
         return out
 
     def resume(self, seconds=0.0):

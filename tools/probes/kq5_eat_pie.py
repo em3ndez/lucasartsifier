@@ -20,7 +20,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _kq5 import boot, event_class, nsrect, offer
+from _kq5 import boot, game_event, nsrect, offer
 
 PIE, BIT, MODE_G, WARN_G = 2, 0x0001, 402, 403
 REFUSE = "Just kidding!"
@@ -39,8 +39,8 @@ c.watch_text()
 log("mode=%d warn=%#06x has_pie=%s" % (c.gint(MODE_G), c.gint(WARN_G),
                                        c.send(ego, "has", PIE)[0]))
 
-EVENT = event_class(c)
-log("Event class at %s" % EVENT)
+EVENT = game_event(c)
+log("using %s as the event" % EVENT)
 box = nsrect(c, ego, log=log)
 log("ego box %s" % box)
 
@@ -49,7 +49,7 @@ log("ego box %s" % box)
 # grading on a channel that has never produced output would fail a guard that is behaving.
 ok = True
 for attempt in (1, 2):
-    said, _aim, claimed = offer(c, EVENT, ego, "Pie", box)
+    said, _aim, claimed = offer(c, EVENT, ego, "Pie")
     bit = bool(c.gint(WARN_G) & BIT)
     has = c.send(ego, "has", PIE)[0]
     want_bit, want_has, want_msg = (True, 1, REFUSE) if attempt == 1 else (True, 0, WARNED)

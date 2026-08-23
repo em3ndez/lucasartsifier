@@ -15,7 +15,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _kq5 import boot, goto, event_class, nsrect, offer, wait_spent, SHOP_ROOM
+from _kq5 import boot, goto, game_event, nsrect, offer, wait_spent, SHOP_ROOM
 
 SHOP_SCRIPT, MODE_G, WARN_G = 204, 402, 403
 SITES = [("Golden_Needle", 3, 0x0200), ("Heart", 9, 0x1000), ("Gold_Coin", 11, 0x0010)]
@@ -38,8 +38,8 @@ c.setg(WARN_G, 0)                                  # all three sites owe a fresh
 c.watch_text()
 log("mode=%d warn=%#06x" % (c.gint(MODE_G), c.gint(WARN_G)))
 
-EVENT = event_class(c)
-log("Event class at %s" % EVENT)
+EVENT = game_event(c)
+log("using %s as the event" % EVENT)
 
 got = goto(c, SHOP_SCRIPT, log=log)
 if got != SHOP_ROOM:
@@ -54,7 +54,7 @@ ok = True
 for item, num, bit in SITES:
     log("\n===== %s (item %d, bit %#06x) =====" % (item, num, bit))
     for attempt in (1, 2):
-        said, _aim, claimed = offer(c, EVENT, "?toyMaker", item, box)
+        said, _aim, claimed = offer(c, EVENT, "?toyMaker", item)
         set_bit = bool(c.gint(WARN_G) & bit)
         # attempt 1 refuses: bit set, item KEPT. attempt 2 warns and lets it go: item spent --
         # but the toymaker's disposal is DEFERRED into getSled's changeState, so the second

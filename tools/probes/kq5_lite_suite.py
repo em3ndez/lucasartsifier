@@ -15,7 +15,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _kq5 import boot, goto, event_class, nsrect, offer, wait_spent, SHOP_ROOM
+from _kq5 import boot, goto, game_event, nsrect, offer, wait_spent, SHOP_ROOM
 from _sites import sites
 
 SRC = os.environ.get("KQ5_SRC", os.path.join(
@@ -69,8 +69,8 @@ boot(c, log=log)
 ego = c.gaddr(0)
 c.setg(MODE_G, 1)                                  # LITE
 c.watch_text()
-EVCLASS = event_class(c)                           # the CLASS address; instances are per-offer
-log("Event class %s, ego %s" % (EVCLASS, ego))
+EV = game_event(c)                                 # a PERMANENT Event -- never a clone
+log("using %s as the event, ego %s" % (EV, ego))
 
 here, aim, results = c.room(), None, []
 for r in rows:
@@ -86,8 +86,7 @@ for r in rows:
                 results.append((tag, "skip: room %s" % got)); continue
             here = got
         target = "?" + r["owners"][0]
-        box = nsrect(c, target, log=log)
-        aim = None                                  # new target -> re-aim
+        nsrect(c, target, log=log)                  # wait for it to be drawn; offer re-reads it
     except Exception as e:                          # noqa: BLE001
         log("  SKIP: %s" % e)
         for l in c.errors():
@@ -99,8 +98,8 @@ for r in rows:
     ok = True
     for attempt in (1, 2):
         try:
-            said, aim, claimed = offer(c, EVCLASS, target,
-                                       NAMES.get(r["item"], str(r["item"])), box, aim)
+            said, aim, claimed = offer(c, EV, target,
+                                       NAMES.get(r["item"], str(r["item"])), log=log)
         except Exception as e:                      # noqa: BLE001
             log("  attempt %d FAILED: %s" % (attempt, e))
             for l in c.errors():

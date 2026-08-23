@@ -254,12 +254,20 @@ Established by running it (KQ5, `~/sierra/patched/kq5` copied to a scratch dir, 
   property `KQ5-LITE-TESTPLAN` calls "the per-site bit's whole point, and the market is the only
   place it can be checked cheaply" — and it is now checked, by machine, in one run.
 
+- ⭐ **The text oracle works.** A probe now reads the player-facing sentence back:
+
+  ```
+  attempt 1: bit=True has(9)=1 (want 1) -> OK
+  said=['Better not. You are going to need that.', ...]
+  ```
+
+  which is verbatim the refusal `KQ5-LITE-TESTPLAN` specifies for that row. It returned `[]` for a
+  long time for a reason worth keeping: **`cmd()` consumes the stream.** It reads ScummVM's stdout
+  looking for its sentinel, so every `bpk StrCpy log` line was gone before `said()` could look.
+  The channel had been working the whole time; the reader was eating it.
+
 Not established:
 
-- `bpk StrCpy log` capturing the refusal *text*. The mechanism is in ScummVM's source
-  (`logParameters` decodes reference args) and the breakpoint registers, but no probe has yet read
-  a game line out of it — so the probe grades on state and reports text as informational. Grading
-  on a channel that has never produced output would have failed a guard that was behaving.
 - anything about a room reached by teleport rather than by walking
 
 ⚠️ **Provenance.** Everything above is Claude DRIVING, and mostly driving *state*. No probe has

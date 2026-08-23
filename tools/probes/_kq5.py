@@ -110,50 +110,66 @@ def nsrect(c, obj, tries=6, log=print):
                re.finditer(r"(nsLeft|nsTop|nsRight|nsBottom)\s*=\s*[0-9a-f]{4}:([0-9a-f]{4})", txt)}
         if got.get("nsRight"):
             return got
+        if tries == 1:
+            return got                             # diagnostic call -- report, do not wait
         log("  %s not drawn yet (%s); letting the room run" % (obj, got))
         c.resume(2.0)
         c.open()
     raise RuntimeError("%s never got an nsRect" % obj)
 
 
-def new_event(c, event_class_addr):
-    """A fresh Event, built for ONE interaction.
+def game_event(c, names=("?uEvt", "?ibEvent")):
+    """The address of a PERMANENT Event instance belonging to the game.
 
-    ⛔ Do not cache this across a room change. `Event new:` returns a CLONE, and clones are
-    reclaimed when the room changes -- the address stays syntactically valid, so the next `send`
-    reaches whatever now lives there and the game dies with
+    ⛔ Do not build events with `Event new:`. That returns a CLONE, and every console `send` runs
+    the VM re-entrantly, which can run SCI's garbage collector -- which reclaims a clone that
+    nothing references, i.e. exactly the event a probe just made. The handler then receives a
+    dead address and the game dies with
 
-        [kq5 5/203 tailor::handleEvent]: Send to invalid selector 0x4c (claimed) of object at 0028:000b!
+        [kq5 5/203 tailor::handleEvent]: lookupSelector: Attempt to send to non-object
+        or invalid script. Address 0028:00a2!
 
-    which is a crash several rows away from the caching that caused it. Reusing one event was
-    tried as a speed-up (it saves three typed commands per offer) and this is what it bought."""
-    import re
-    raw = c.send(event_class_addr, "new")[1]
-    m = re.search(r"Value returned:\s*([0-9a-f]{4}:[0-9a-f]{4})", raw, re.I)
-    if not m:
-        raise RuntimeError("Event new: returned nothing: %r" % raw[:200])
-    ev = m.group(1)
-    c.cmd("send %s type 16384" % ev)
-    c.cmd("send %s message 4" % ev)
-    return ev
+    several commands after the create, intermittently, which reads as "the harness is flaky".
+    Caching one clone across rows dies the same way for the extra reason that a room change frees
+    clones outright.
+
+    `uEvt` is the User's own event and `ibEvent` is the icon bar's: static instances in loaded
+    scripts, so neither is collectable and neither goes stale across a room change."""
+    for n in names:
+        out = c.cmd("vo " + n)
+        if "not an object" not in out and "Invalid address" not in out and out.strip():
+            return n
+    raise RuntimeError("no permanent Event instance found (tried %s)" % (names,))
 
 
-def offer(c, event_class_addr, target, item, box, aim=None):
+def offer(c, ev, target, item, box=None, aim=None, log=print):
     """Hand `item` to `target` the way a click does.
 
     A handler wants an event that is type 16384, carries message 4, and lands inside the target's
     nsRect (`proc255_5` is a bounding-box test). All three are writable, so a click is
     constructible. `aim` is the (x, y) already set on this event, so a run of offers at the SAME
     target does not re-send them. Returns whatever the game printed (see Console.said)."""
+    # ⛔ Re-read the box for EVERY offer. Half these targets are Actors, and an Actor walks: the
+    # box read at the top of a row is stale by the second attempt, the event lands outside it,
+    # `proc255_5` rejects it, and the row reports a guard that "did not fire" when in fact the
+    # handler was never reached. It made the tailor row pass in one run and fail in the next.
+    box = nsrect(c, target, log=log)
     cx = (box["nsLeft"] + box["nsRight"]) // 2
     cy = (box["nsTop"] + box["nsBottom"]) // 2
-    ev = new_event(c, event_class_addr)            # fresh EVERY time -- see new_event's note
+    # `ev` is a PERMANENT instance (see game_event), so every field is set fresh each time.
+    c.cmd("send %s type 16384" % ev)
+    c.cmd("send %s message 4" % ev)
     c.cmd("send %s x %d" % (ev, cx))
     c.cmd("send %s y %d" % (ev, cy))
     c.cmd("send %s claimed 0" % ev)                # a handler that ran will set this to 1
     c.cmd("send %s curInvIcon ?%s" % (c.gaddr(69), item))
     c.said()                                       # drop whatever the setup printed
     c.cmd("send %s handleEvent %s" % (target, ev))
+    # ⛔ NEUTRALISE THE EVENT BEFORE RESUMING. `uEvt` is the User's own event object, so a
+    # synthetic one left in it is picked up by the game's normal loop on the very next cycle and
+    # DELIVERED AGAIN. That showed up as a row where the guard both refused (warn bit set) and
+    # sold (item spent) on the same attempt -- the first delivery was ours, the second the game's.
+    c.cmd("send %s type 0" % ev)
     c.resume(1.2)
     c.key("Return", n=2, settle=0.5)               # a refusal is a print; dismiss it
     import time as _t
@@ -165,6 +181,9 @@ def offer(c, event_class_addr, target, item, box, aim=None):
     # a probe aiming problem, not a guard problem. Without it the two are indistinguishable and
     # an aiming bug reads as a failing guard.
     claimed, _ = c.send(ev, "claimed")
+    if not claimed:                                # say WHERE it was aimed and where the target is
+        now = nsrect(c, target, tries=1, log=log)
+        log("    aimed (%d,%d); %s box was %s, now %s" % (cx, cy, target, box, now))
     return c.said(), (cx, cy), claimed
 
 
