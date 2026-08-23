@@ -226,7 +226,7 @@ SHOP_ROOM = 5
 BOUNCE_ROOM = 4                              # the town square, room 5's own neighbour
 
 
-def goto(c, room, settle=6.0, tries=3, log=print):
+def goto(c, room, settle=6.0, tries=3, force=False, log=print):
     """Teleport, handling the room-5 shops, and VERIFY that the game moved.
 
     `room N` only writes global 13. KQ5's `Game:doit` polls
@@ -242,15 +242,26 @@ def goto(c, room, settle=6.0, tries=3, log=print):
     target, region = room, None
     if room in SHOP_REGIONS:
         region = SHOP_REGIONS[room]
-        c.setg(313, region)
         target = SHOP_ROOM
         log("  script %d is a REGION of room %d; global313=%d" % (room, SHOP_ROOM, region))
+
+    if here(c) == target and region is None and not force:
+        # Already there, and there is no region to re-pick: re-entering would only replay the
+        # room's welcome cutscene, which costs a minute of game time per row.
+        log("  already in room %d" % target)
+        settle_room(c, log=log)
+        return target
+    if region is not None:
+        c.setg(313, region)
 
     # ⛔ A room change to the room you are ALREADY in is a no-op, because the game acts on global
     # 13 only when it differs from global 11. That matters most for the shops: which one you are
     # in is chosen by global313 AT init, so `room 5` while standing in the tailor silently leaves
     # you in the tailor, with `?toyMaker` simply not existing. Bounce out and back so init reruns.
     if here(c) == target:
+        # ⛔ A room change to the room you are ALREADY in is a no-op, so bounce out and back --
+        # which is also how a room's LOCALS get re-initialised. Rows in the same room otherwise
+        # inherit each other's leftovers (the cat remembers it has been fed).
         log("  already in room %d; bouncing via %d so init re-runs" % (target, BOUNCE_ROOM))
         _land(c, BOUNCE_ROOM, settle, tries, log)
 
