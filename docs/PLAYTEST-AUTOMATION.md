@@ -852,3 +852,26 @@ The bakery, which has one baker and no forwarding Props, raises exactly one box 
 item. `tools/probes/kq5_toyshop_double_fire.py` is the control that separates this from the other
 reading (the dismissing Return being re-dispatched as a fresh offer): **mode Full**, where
 `<allow>` can never be true, so two refusals from one click can only mean two dispatches.
+
+## Where the offer estate stands
+
+17 inventory-offer guards, driven end to end by scripted clicks with nobody at the keyboard.
+Each row checks the warn bit, whether the item survived, whether the world moved, **and** the
+guard's own sentence — all four, because any one of them alone can be satisfied by an accident.
+
+| | rows | |
+|---|---|---|
+| **PASS** | **10** | rm006 `$2000` · rm012 `$0020` · rm030 `$0004` · rm032 `$0001` · tailorShop `$0800` · bakeShop `$0008` `$0100` `$0400` · Main `$0001` `$0002` |
+| **FAIL** | **4** | toyShop `$0010` `$0200` `$1000` · rm034 `$0080` — all four the same defect: the deny path does not claim the event |
+| not covered | 3 | rm006 `$0040` (the cat crosses the picture only for a few seconds mid-chase) · rm046 `$4000` `$0020` (a teleport into room 46 kills the game in `timers::eachElementDo`) |
+
+Runs: `/tmp/kq5_final.log` for all but the two script-0 rows, which come from the `kq5_f4` run of
+the same suite (the final run's ScummVM died in the bakery after the last `$0400` purchase, and
+the suite now stops rather than filing the remainder as SKIPs — a dead game is not a row result).
+
+⚠️ **13 emitted sites are positional guards this suite does not cover at all** — they fire on
+where the ego IS (`onControl`, `edgeHit`), not on a click, and need a probe of their own:
+rm018 `$8000`, rm032 `$0001` (its `doit` half), rm040 `$0002`, boatRegion `$0004` `$0008`
+`$0010`, rm049 `$0040`, rm054 `$0080`, rm085 `$0100`. The three `boatRegion` ones and
+rm049/rm054 are in `handleEvent` and carry message 3 (the hand), so `_kq5.arm_icon` should reach
+them; the rest are `doit` and need the ego placed.
