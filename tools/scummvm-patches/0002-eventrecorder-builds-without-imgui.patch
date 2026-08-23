@@ -1,0 +1,59 @@
+Let --enable-eventrecorder build without ImGui.
+
+At scummvm master cd35134 the event recorder CALLS `isImGuiRecorderEnabled()`
+unconditionally but only DECLARES it under `USE_IMGUI`, so configuring with
+`--enable-eventrecorder` and no ImGui fails:
+
+    gui/EventRecorder.cpp:432: error: 'isImGuiRecorderEnabled' was not declared in this scope
+    gui/EventRecorder.cpp:862: error: no declaration matches
+                                     'bool GUI::EventRecorder::isImGuiRecorderEnabled() const'
+
+This is an upstream build break, not something specific to us -- ImGui is itself disabled
+automatically when no enabled engine wants it, which is exactly the SCI-only case. Declare
+the predicate always and define it as `false` when ImGui is absent.
+
+FOR LOCAL DEBUGGING ONLY. If this is ever worth sending upstream it wants a proper look
+rather than this stub.
+
+APPLY WITH: (cd tools/scummvm-ref && git apply ../scummvm-patches/0002-*.patch)
+
+diff --git a/gui/EventRecorder.cpp b/gui/EventRecorder.cpp
+index f8ec2dd3..52379b88 100644
+--- a/gui/EventRecorder.cpp
++++ b/gui/EventRecorder.cpp
+@@ -859,6 +859,10 @@ void EventRecorder::deleteTemporarySave() {
+ 	_temporarySlot = -1;
+ }
+ 
++#ifndef USE_IMGUI
++// LOCAL BUILD FIX -- no ImGui, so the ImGui recorder UI is simply never enabled.
++bool EventRecorder::isImGuiRecorderEnabled() const { return false; }
++#else
+ bool EventRecorder::isImGuiRecorderEnabled() const {
+ #ifdef USE_IMGUI
+ 	return debugChannelSet(-1, kDebugImGui);
+@@ -866,6 +870,7 @@ bool EventRecorder::isImGuiRecorderEnabled() const {
+ 	return false;
+ #endif
+ }
++#endif
+ 
+ #ifdef USE_IMGUI
+ 
+diff --git a/gui/EventRecorder.h b/gui/EventRecorder.h
+index c76738d3..ed2caa70 100644
+--- a/gui/EventRecorder.h
++++ b/gui/EventRecorder.h
+@@ -194,8 +194,11 @@ public:
+ 
+ private:
+ 
+-#ifdef USE_IMGUI
++	// LOCAL BUILD FIX: the recorder calls this unconditionally but only DECLARES it under
++	// USE_IMGUI, so `--enable-eventrecorder` without ImGui does not compile at this commit.
++	// Declared always; defined as `false` below when ImGui is absent.
+ 	bool isImGuiRecorderEnabled() const;
++#ifdef USE_IMGUI
+ #endif
+ 
+ 	bool pollEvent(Common::Event &ev) override;

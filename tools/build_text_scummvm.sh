@@ -35,6 +35,12 @@ else
     echo "applied 0001-text-console-keep-the-engine-alive-while-waiting.patch"
 fi
 
+# ⭐ SEE ALSO tools/build_recorder_scummvm.sh. ScummVM has a first-class event recorder --
+# record a session once, replay it deterministically forever -- and its own test runner for it
+# (devtools/run_event_recorder_tests.py). It is OFF BY DEFAULT, which is why no stock build has
+# `--record-mode`. That is very likely a better foundation than this text console for anything
+# involving an INTERACTION, because playback captures timing and RNG.
+
 # SDL2 headers without root: the runtime lib is already installed, only the dev package is
 # missing, and it can be unpacked into a prefix. Its `libSDL2.so` symlink points at a file that
 # only the RUNTIME package ships, so it dangles and the linker silently falls back to the static

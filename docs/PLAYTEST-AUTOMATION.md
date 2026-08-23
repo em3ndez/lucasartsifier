@@ -279,6 +279,33 @@ Not established:
 
   The answer was not more retry tuning. See the next section.
 
+## ⭐ ScummVM already has this, and it is off by default
+
+Asked whether anyone had done this before, the answer is yes — **upstream, in the tree we already
+vendor**:
+
+* `--record-mode=record|playback|fast_playback` with `--record-file-name`. A session is recorded
+  once and replayed **deterministically**, because the recording captures timing and RNG — which
+  is precisely the class of problem that made console-driven interaction unreliable here.
+* Periodic screenshots are hashed into the recording (`--screenshot-period`), so a replay carries
+  its own oracle.
+* `devtools/run_event_recorder_tests.py` is ScummVM's own runner: it replays every recording under
+  `fast_playback`, asserts the exit code, and emits xUnit XML. `--list-records-json` enumerates
+  them.
+
+⛔ **`_eventrec=no` in `configure`** — that is why no distro binary has `--record-mode` and why
+this was easy to miss. `tools/build_recorder_scummvm.sh` builds one (and carries patch 0002,
+because at the current master the recorder does not compile without ImGui — an upstream break,
+since ImGui is auto-disabled for an SCI-only build).
+
+So the honest framing of everything below is: it is a hand-rolled approximation of a facility that
+already exists. It found real things — the region/room trap, two errors in the lite plan, the
+per-site independence result — but for **driving an interaction**, the recorder is the tool to
+reach for first.
+
+(For the record, ScummVM's engine testing is otherwise buildbot + screenshot-diff regression, and
+the Director engine has its own corpus of test movies. It is not all manual.)
+
 ## Two transports, and the line between them
 
 `tools/build_text_scummvm.sh` builds a ScummVM with `--enable-text-console`, whose SCI debugger
