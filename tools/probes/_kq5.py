@@ -226,7 +226,7 @@ SHOP_ROOM = 5
 BOUNCE_ROOM = 4                              # the town square, room 5's own neighbour
 
 
-def goto(c, room, settle=6.0, tries=3, force=False, log=print):
+def goto(c, room, settle=6.0, tries=3, force=False, wait_idle=True, log=print):
     """Teleport, handling the room-5 shops, and VERIFY that the game moved.
 
     `room N` only writes global 13. KQ5's `Game:doit` polls
@@ -249,7 +249,8 @@ def goto(c, room, settle=6.0, tries=3, force=False, log=print):
         # Already there, and there is no region to re-pick: re-entering would only replay the
         # room's welcome cutscene, which costs a minute of game time per row.
         log("  already in room %d" % target)
-        settle_room(c, log=log)
+        if wait_idle:
+            settle_room(c, log=log)
         return target
     if region is not None:
         c.setg(313, region)
@@ -267,7 +268,13 @@ def goto(c, room, settle=6.0, tries=3, force=False, log=print):
 
     got = _land(c, target, settle, tries, log)
     log("  room %d -> %s" % (target, got))
-    settle_room(c, log=log)
+    # ⛔ NOT EVERY ROOM SHOULD BE RUN OUT. Room 6's cat only crosses the picture DURING the
+    # cat-and-mouse chase, and the chase starts the moment the ego is placed -- the room's own
+    # `else` branch drops him at (316, 150), which already satisfies the trigger's
+    # `(> (global0 x:) 290) (> (global0 y:) 142)`. Settling therefore runs the chase to its end
+    # and disposes of the cat before a single offer can be made.
+    if wait_idle:
+        settle_room(c, log=log)
     return got
 
 

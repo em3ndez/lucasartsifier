@@ -73,9 +73,11 @@ PLACE = {"Main": None}
 # So a staging step per room, each quoting the line it satisfies. This is not a declared spec --
 # nothing here decides a verdict; it only puts the game where a player would be standing when
 # they make the offer. A room with no entry gets none, and a row that then fails to land says so.
+# `settle: False` means DO NOT run the room out before offering. Room 6's chase starts on entry
+# (the room's `else` branch drops the ego at 316,150, which already satisfies the trigger), so
+# settling runs it to its end and disposes of the cat before an offer can be made.
 STAGE = {
-    # rm006: walk Graham to the right-hand edge so the chase begins and the cat is on screen.
-    "rm006": lambda c, ego: c.cmd("send %s posn 300 150" % ego),
+    "rm006": {"settle": False, "do": lambda c, ego: None},
 }
 
 def log(*a): print(*a, flush=True)
@@ -288,15 +290,16 @@ for r in rows:
         # is on screen at all), and arranging them afterwards is too late.
         apply_reqs(c, ego, r["reqs"], log=log)
         c.cmd("send %s get %d" % (ego, r["item"]))
+        stage = STAGE.get(r["file"], {})
         if want_place is not None:
-            goto(c, want_place, force=True, log=log)   # re-enter so the room's LOCALS re-init
+            goto(c, want_place, force=True, wait_idle=stage.get("settle", True), log=log)
         else:
             settle_room(c, log=log)
         apply_reqs(c, ego, r["reqs"], log=lambda *a: None)   # again: entering may have moved it
         c.cmd("send %s get %d" % (ego, r["item"]))
-        if r["file"] in STAGE:
+        if stage.get("do"):
             log("  staging %s so the target is on screen (see STAGE)" % r["file"])
-            STAGE[r["file"]](c, ego)
+            stage["do"](c, ego)
             c.resume(4)
         # ⛔ Try every owner of the bit, not just the first. They are alternative places the
         # same offer can be made -- room 6 writes $2000 from both `cat` and `catStrip`, and the
