@@ -542,10 +542,16 @@ re-read six seconds on does not catch it either. That is the open thread.
 **The working interaction path today is still `send <obj> handleEvent <event>` on the stock
 binary**, which is how all four verified rows were driven.
 
+> ⚠️ **SUPERSEDED 2026-08-23 — see the last section of this document.** The diagnosis in this
+> section is wrong about the cause. The message box is not waiting for TIME; a backtrace taken
+> from inside it shows `Dialog::doit` polling `kGetEvent`, i.e. waiting for INPUT. Scripted input
+> plus a virtual clock (patch 0004) drives a whole guard row over the pipe today.
+
 **Bottom line: no guard row has completed over the pipe.** The four verified rows remain the ones
 driven on the stock binary with XTEST.
 
-So the honest split today is **pipe for state, stock binary for interaction**:
+So the honest split as of 2026-08-22 was **pipe for state, stock binary for interaction**
+(⚠️ superseded — the pipe does both now, see the last section):
 
 | | pipe (text console) | XTEST (stock) |
 |---|---|---|
@@ -561,3 +567,140 @@ remains unverified — it is still the oldest open item in `GUARD-MODES.md`.
 ⚠️ **Provenance.** Everything above is Claude DRIVING, and mostly driving *state*. No probe has
 played a game. `guard-modes-play-verified` and the play-confirmed results in the test plans are the
 user's own playing and stay that way.
+
+---
+
+# ⭐ Scripted input and a controllable clock — 2026-08-23
+
+The transport is built and a guard row now completes with nobody at the keyboard, on the pipe.
+`tools/scummvm-patches/0004-scripted-input-and-a-controllable-clock.patch` adds a fifth mode to
+ScummVM's event recorder that keeps its two mechanisms and throws its oracle away, and
+`tools/build_playtest_scummvm.sh` builds one binary carrying the whole stack — text console for
+state, scripted input for interaction.
+
+## What it is
+
+* **`--script-input=FILE`** — the recorder's `EventSource`, fed from a text file instead of a
+  tape. Events go into the engine's own pipeline: no X server, no window focus, no dropped
+  keystroke. `--script-shared` lets real input through as well; the default is exclusive, so a
+  mouse crossing the window cannot change a result.
+* **A virtual clock.** `_fakeTimer` gains `--script-clock-step` milliseconds for every
+  `getMillis()` the engine performs, and nothing else moves it. Deterministic, and it cannot be
+  starved: every game-side wait is a loop that queries the time. The recorder's `NullMixerManager`
+  is pumped from the same place, so speech advances with no audio device.
+* **`--script-seed`** — a fixed RNG seed per named source, the third leg of determinism.
+* **`--script-trace=N`** — print the clock every N virtual ms, from `processMillis`.
+* **A `script` command in the debugger** — `clock`, `trace`, `clear`, `load`, `add`. This is where
+  the interesting steps are authored, because *where* to click is an `nsRect` read out of the live
+  VM and half these targets are Actors, which walk. Times in a live batch are rebased onto the
+  clock as it stands, so `t=+500` means half a second from now.
+
+A script is one step per line, `#` comments, `t=` absolute or `t=+` relative virtual ms:
+
+```
+t=1200 click 141 124      # move, press, release 100ms later
+t=+400 rclick 141 124     # also: move / down / up
+t=+250 key return         # a name from the table, or a single character
+t=2500 mark offered       # prints "[script] t=2500 mark offered" on stdout
+t=3000 break              # hands the console back at a known point in GAME time
+t=9000 quit               # a script that never quits never terminates
+```
+
+`mark` and `break` are what closed the oldest open thread here. The arm used to complete
+*asynchronously with respect to sampling* — the warn bit read as unset and the refusal turned up
+in the next attempt's window — because the probe slept for a wall-clock guess. Now it is handed
+back at a stated point in game time.
+
+## ⛔ THE DIAGNOSIS THAT WAS BACKWARDS
+
+Last session concluded: *the game clock does not advance while the debugger holds stdin, so a
+timed dialog never reaches its timeout, and everything after the print is abandoned.* Every
+repair followed from that, and none worked.
+
+A virtual clock the engine drives should have dissolved it. It did not — so the clock was not the
+variable. `--script-trace` (written for exactly this ambiguity: a frozen clock and a clock that
+runs while nothing polls events look identical from outside) showed the clock **stopped dead**
+during a `send` hang, at 3% CPU. Nothing was running at all.
+
+Then a `break` step gave a prompt **while the message box was on screen** — the one moment a
+backtrace can say what the box is doing:
+
+```
+d: script 255 - Dialog::doit(0000:0000)
+e: script 999 - Event::new()
+f:[e]  kGetEvent(0000:7fff, 0028:003e)
+```
+
+**It is polling for an event. It waits for INPUT, not for time.** The hourglass cursor says
+otherwise and is misleading. No clock control ends that box; the arm's remaining statements —
+the warn bit, the item's disposal — stay unreached until something dismisses it. A player
+dismisses it without noticing; a probe has to be told to.
+
+## The three rules for driving an offer, each one measured
+
+`tools/probes/kq5_whatdismisses.py` establishes them, and each can fake a guard result on its own.
+
+1. **Return or a mouse click ends a box. Space does not.** A run that dismissed with space read
+   every guard as "did not fire".
+2. **The count matters.** From the emitted arm: box 1 is the action's own message and always
+   plays; a second box plays whenever the guard has something to say. One dismissal too FEW leaves
+   the arm parked and its effects land in the *next* attempt's window — which reads exactly like a
+   guard that did not fire. One too MANY starts a fresh offer, because the item is still on the
+   cursor — which reads like a guard that fired twice. Both were observed.
+3. **Dismiss with Return, not a click**, since a dismissing click would also be an offer wherever
+   it lands.
+
+⭐ And **derive the mode encoding, do not assume it**. `<allow>` in the emitted source is
+`(or (== global402 2) (and (== global402 1) (& global403 <bit>)))`, so **0 = Full, 1 = Lite,
+2 = Off**. A run that used 0 for "off" measured the Full guard and then reported its own control
+as a failure.
+
+## What passes now
+
+**KQ5 LA6 — EAT the Pie — state *and* dialogue, driven end to end, no hands.** Two independent
+runs on separate game copies, byte-identical down to the virtual timestamps:
+
+| | virtual t | `global403 & $0001` | `ego has: 2` | the sentence |
+|---|---|---|---|---|
+| control, mode Off | 19730 | clear | **gone** | *"Mmmmmmm! That was the best custard pie Graham has ever eaten!"* |
+| Lite, attempt 1 | 27670 | **set** | still held | *"Just kidding! You hold on to it because you still need it."* |
+| Lite, attempt 2 | 35620 | set | **gone** | *"You have been warned!"* |
+
+Every sentence is the one `KQ5-LITE-TESTPLAN.md` specifies for that row, checked as text; every
+transition is checked as a number. The control matters as much as the row: with guards Off the
+same click simply eats the pie, so a failure downstream is a guard result and not a broken
+transport.
+
+## Proving the transport before trusting it
+
+Two controls, in this order, because the first conclusion drawn without them was wrong.
+
+* ⛔ **"A scripted click does not reach the game" was FALSE.** The ego would not walk — but an
+  XTEST click would not move it either, and XTEST is the transport that already worked. Two
+  transports failing identically is not two bugs.
+* ⭐ **Click the game's OWN icon bar and read `curIcon`.** It needs no assumption about walkable
+  ground, about poked icon state, or about what should print — the bar is drawn by the game, it
+  handles its own clicks, and the result is one readable property.
+  `tools/probes/kq5_iconbar_click.py`: two scripted clicks, `curIcon` changed both times. Clicks
+  reach SCI and are dispatched. (XTEST reads as *not* reaching it, which is correct — script mode
+  is exclusive by default.)
+
+## Still open
+
+* **`send <obj> handleEvent <ev>` over the pipe still hangs** once the arm prints, and the clock
+  trace shows the clock frozen at 3% CPU while it does — so it is not time starvation. Arming a
+  `debug_countdown` before the send gets a prompt back but raises
+  `Dialog::doit: Tried to assign to an already busy PauseToken!`, which is the debugger nesting
+  inside itself. **This no longer blocks anything**: scripted clicks are the better transport and
+  the more faithful one.
+* Only LA6 is converted. The other 24 lite rows need `offer_script` plus their box counts.
+* `restore_game` still ends the session on the text build, so save/restore persistence is still
+  unverified.
+* With `--script-realtime` off, the debugger's stdin poll (patch 0001) spins rather than sleeps,
+  because `delayMillis` is a no-op under fast playback. Costs a core while sitting at a prompt.
+
+## Provenance
+
+Claude driving, and now driving an INTERACTION rather than only state — but still Claude, not a
+person playing. `guard-modes-play-verified` and the play-confirmed rows in the test plans remain
+the user's own playing and stay that way.
