@@ -12,6 +12,12 @@ import re
 
 BIT = re.compile(r"\|= (global40[34]) (\$[0-9a-fA-F]{4})")
 INST = re.compile(r"^\((?:instance|class)\s+(\w+)\s+of\s+(\w+)", re.M)
+# ⛔ WHICH METHOD the write sits in is what separates an OFFER guard from a POSITIONAL one, and
+# they need different probes entirely: an offer is a click on an object, a positional guard fires
+# when the ego walks somewhere. `handleEvent` is the offer shape; `doit` polls the ego's own
+# position (`onControl`, `edgeHit`) and never sees an event at all. Guessing from the owner's name
+# does not work -- rm032 writes the same bit from BOTH shapes.
+METHOD = re.compile(r"^\t\(method \((\w+)", re.M)
 # The head is spelled across lines in some files, so this cannot be a single-line pattern.
 SWITCH = re.compile(r"\(switch\s*\(\s*global9\s+indexOf:\s*\(global69\s+curInvIcon:\)\s*\)", re.S)
 
@@ -170,13 +176,15 @@ def sites(src_dir):
         for m in BIT.finditer(text):
             off = m.start()
             owner = next((n for p, n in reversed(heads) if p < off), "?")
+            meth = next((mm.group(1) for mm in reversed(list(METHOD.finditer(text)))
+                         if mm.start() < off), "?")
             item = None
             for s, e, aa in switches:
                 if s < off < e:
                     for lab, a, b in aa:
                         if a < off < b:
                             item = lab
-            key = (name, m.group(1), m.group(2), item, owner)
+            key = (name, m.group(1), m.group(2), item, owner, meth)
             if key in seen:
                 continue
             seen.add(key)
@@ -218,8 +226,10 @@ def sites(src_dir):
                             if refuse:
                                 refuse_via = sg.group(1)
             rows.append({"file": name[:-3], "script": int(sc.group(1)) if sc else None,
+                         "off": off,
                          "word": int(m.group(1)[6:]),
                          "mask": int(m.group(2)[1:], 16), "item": item, "owner": owner,
+                         "method": meth,
                          "refuse": refuse, "warn": warn, "refuse_via": refuse_via})
     return rows
 
@@ -231,9 +241,9 @@ if __name__ == "__main__":
     offers = [r for r in rs if r["item"] is not None]
     print("%d emitted sites; %d are inventory offers" % (len(rs), len(offers)))
     for r in sorted(rs, key=lambda r: (r["word"], r["mask"])):
-        print("  %-11s s%-4s g%d $%04x  item=%-3s %-14s %-10s"
+        print("  %-11s s%-4s g%d $%04x  item=%-3s %-14s %-10s in %s"
               % (r["file"], r["script"], r["word"], r["mask"], r["item"],
-                 names.get(r["item"], "-"), r["owner"]))
+                 names.get(r["item"], "-"), r["owner"], r["method"]))
         print("      refuse=%r%s\n      warn  =%r"
               % (r["refuse"], " (via %s)" % r["refuse_via"] if r["refuse_via"] else "",
                  r["warn"]))
@@ -257,8 +267,10 @@ if __name__ == "__main__":
 
 ELSE = re.compile(r"(?<![A-Za-z0-9_])else(?![A-Za-z0-9_])")
 HAS = re.compile(r"^\(global0 has: (\d+)\)$")
-OWNER = re.compile(r"^\(== \(\(global9 at: (\d+)\) owner:\) (\w+)\)$")
+OWNER = re.compile(r"^\((==|!=) \(\(global9 at: (\d+)\) owner:\) (\w+)\)$")
 COUNTER = re.compile(r"^\(== \(\+\+ (global\d+)\) (\d+)\)$")
+GLOBALEQ = re.compile(r"^\((==|!=) global(\d+) (-?\d+)\)$")
+DETAIL = re.compile(r"^\(== \(global1 detailLevel:\) (\d+)\)$")
 FLAG = re.compile(r"^\(proc0_12 (\d+)\)$")
 
 # Tests a scripted offer satisfies BY CONSTRUCTION, so they are not preconditions a row has to
@@ -271,6 +283,7 @@ FLAG = re.compile(r"^\(proc0_12 (\d+)\)$")
 HARNESS = (re.compile(r"^\(param1 claimed:\)$"),
            re.compile(r"^\((?:==|!=) \(param1 type:\) 16384\)$"),
            re.compile(r"^\(proc255_5 self param1\)$"),
+           re.compile(r"^\(& \(OnControl 4 \(param1 x:\) \(param1 y:\)\) \$[0-9a-fA-F]+\)$"),
            re.compile(r"^\(== global402 [012]\)$"),
            re.compile(r"^\(and \(== global402 1\) \(& global40[34] \$[0-9a-fA-F]{4}\)\)$"),
            re.compile(r"^\(& global40[34] \$[0-9a-fA-F]{4}\)$"),
@@ -358,7 +371,17 @@ def _needs(text, span, want, out):
         return
     m = OWNER.match(e)
     if m:
-        out.append(("owner", (int(m.group(1)), m.group(2)), want))
+        out.append(("owner", (int(m.group(2)), m.group(3)),
+                    want if m.group(1) == "==" else not want))
+        return
+    m = GLOBALEQ.match(e)
+    if m:
+        out.append(("global", (int(m.group(2)), int(m.group(3))),
+                    want if m.group(1) == "==" else not want))
+        return
+    m = DETAIL.match(e)
+    if m:
+        out.append(("detail", int(m.group(1)), want))
         return
     m = COUNTER.match(e)
     if m:
@@ -370,6 +393,12 @@ def _needs(text, span, want, out):
     m = FLAG.match(e)
     if m:
         out.append(("flag", int(m.group(1)), want))
+        return
+    if e == "(proc255_5 global0 param1)":
+        # The hit test is against the EGO, not against the object whose method this is: rm032's
+        # sled is used ON GRAHAM. Which object the click has to land on is therefore a property
+        # of the site, not of the owner's name.
+        out.append(("target", "ego", want))
         return
     out.append(("?", e, want))
 
@@ -408,7 +437,9 @@ def requirements(text, off):
             for a, b in kids[1:]:
                 if a < off < b:                      # the clause the write is in
                     clause = _args(text, a, b)
-                    if clause:
+                    # `(else ...)` is a clause with no test of its own; taking its head as one
+                    # produced a requirement spelled literally "else".
+                    if clause and text[clause[0][0]:clause[0][1]].strip() != "else":
                         _needs(text, clause[0], True, out)
                     break
     # Keep the first opinion about each atom: the outermost enclosing test wins, and a later
@@ -421,3 +452,34 @@ def requirements(text, off):
         seen.add(key)
         uniq.append((k, d, w))
     return uniq
+
+
+INITS = {}
+
+
+def presence(text, owner):
+    """[(kind, detail, wanted)] for the target OBJECT to be in the room at all.
+
+    ⛔ A row needs three separate things to be true and only one of them is in the guard's arm:
+    the room has to be enterable, the ARM's enclosing conds have to hold, and the object the
+    click lands on has to EXIST. The third is arranged by the room's `init`, not by the arm --
+    room 6's cat is only initialised
+
+        (if (and (or (global0 has: 8) (global0 has: 16)) (not ...)) (rat init:) (cat init:))
+
+    i.e. only when Graham is carrying the shoe or the stick. Without them `?cat` reads
+    0,0,0,0 forever, the click lands nowhere, and the row reports a guard that did not fire.
+
+    Same machinery as `requirements`, pointed at the `init:` instead of the bit write.
+    """
+    best = None
+    for m in re.finditer(r"\(%s\b[^()]*\binit:" % re.escape(owner), text):
+        reqs = requirements(text, m.start())
+        # An object can be initialised from more than one branch (rm046 puts the hermit on
+        # screen two different ways). Take the branch whose conditions this can actually
+        # arrange; an unarrangeable one is not evidence that the object cannot appear.
+        if all(k != "?" for k, _, _ in reqs):
+            return reqs
+        if best is None:
+            best = reqs
+    return best or []

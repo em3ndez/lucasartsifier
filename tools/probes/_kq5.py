@@ -272,10 +272,19 @@ def goto(c, room, settle=6.0, tries=3, force=False, log=print):
 
 
 def _land(c, target, settle, tries, log):
-    """Ask for `target` and keep the game running until global 11 says it arrived."""
+    """Ask for `target` and keep the game running until global 11 says it arrived.
+
+    ⛔ A MESSAGE BOX BLOCKS A TELEPORT. `Game:doit` is what performs
+    `(if (!= global13 global11) (self newRoom: global13))`, and while a box is up the game is
+    inside `Dialog::doit` instead. Room 32 raises one on its own -- it is the mountain where
+    Graham starves, and its warning came up a few seconds after the room settled -- and once
+    that box was on screen NOTHING moved again: twelve consecutive rows reported "the game never
+    entered room N" and read as twelve broken guards. Dismissing the box freed it immediately.
+    """
     for attempt in range(tries):
         if getattr(c, "input_script", None):
             park_mouse(c, log=log)                 # a shown icon bar swallows the whole teleport
+            drain_boxes(c, "land%d" % attempt, log=log)   # and so does an undismissed box
         c.cmd("room %d" % target)
         c.resume(settle)
         c.open()
