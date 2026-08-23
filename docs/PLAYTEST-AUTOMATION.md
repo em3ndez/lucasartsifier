@@ -269,6 +269,18 @@ Established by running it (KQ5, `~/sierra/patched/kq5` copied to a scratch dir, 
 Not established:
 
 - anything about a room reached by teleport rather than by walking
+- ⚠️ **the harness is not yet reliable enough for a long unattended run.** Nine rows in one boot
+  is roughly 30 minutes, and over that span a dropped keystroke eventually wedges it. The failure
+  is always the same shape and now always diagnosable: the console screenshot showed `) versi` —
+  the sentinel's last character *and* its Return lost, the line never submitted, the driver
+  waiting for a reply that cannot come, and each retry typing into the leftover. `cmd()` and
+  `is_open()` now send a bare Return first so a partial line is always flushed, but that fix has
+  not yet carried a full nine-row run.
+
+  The real answer is probably not more retry tuning: it is to stop typing. A ScummVM built with
+  `--enable-text-console` reads the debugger from **stdin**, which removes XTEST from the loop
+  entirely. That is a build, not a patch, and it would make every number above cheap to re-check
+  rather than something to schedule around.
 
 ⚠️ **Provenance.** Everything above is Claude DRIVING, and mostly driving *state*. No probe has
 played a game. `guard-modes-play-verified` and the play-confirmed results in the test plans are the

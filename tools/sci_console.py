@@ -263,6 +263,7 @@ class Console:
         """Ask the console something only it can answer. Repeated, because a DROPPED KEYSTROKE
         looks exactly like a closed console and the two want opposite responses."""
         for _ in range(probes):
+            self.tap("Return")                     # flush any half-typed line (see cmd())
             self._read_new()
             self.type(_SENTINEL + "\n")
             deadline, out = time.time() + 4, ""
@@ -286,8 +287,8 @@ class Console:
         the Sierra logo, a cutscene, or a modal game dialog is simply ignored -- so `open()`
         failing usually means the BOOT is stuck, not that the console is broken, and the
         screenshot it writes on failure is the fastest way to see which."""
-        if self.is_open(probes=1):
-            return "already open"
+        # ⛔ Do not probe before pressing. `is_open` types into whatever has focus, and if the
+        # console is CLOSED that goes to the GAME as gameplay keystrokes. Press first.
         for _ in range(tries):
             self.focus()
             self._read_new()
@@ -311,6 +312,13 @@ class Console:
         exist. A lost keystroke is therefore RETRIED, not returned: silently answering
         "Unknown command" for a state read would make a probe report the wrong state."""
         for attempt in range(tries):
+            # ⛔ FLUSH FIRST. A dropped Return leaves a half-typed line sitting at the prompt --
+            # the console showed `) versi` with the sentinel's last character and its newline
+            # both lost -- and the driver then waits forever for a reply to a line that was never
+            # submitted, while every retry types INTO the leftover, making it worse. A bare
+            # Return submits whatever is there (at worst an "Unknown command") and guarantees a
+            # clean prompt. One keystroke; it turns a wedge into a retry.
+            self.tap("Return")
             self._read_new()                      # discard anything still in flight
             self.type(line + "\n")
             self.type(_SENTINEL + "\n")
