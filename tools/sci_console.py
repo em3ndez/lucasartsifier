@@ -658,6 +658,28 @@ class Console:
         m = re.search(r"Value returned:\s*([0-9a-f]{4}):([0-9a-f]{4})", out, re.I)
         return (int(m.group(2), 16) if m else None), out
 
+    # A Sierra message box is a WINDOW, and ScummVM's `window_list` names the ones that are
+    # open. That makes "how many boxes are up?" a READING rather than a prediction -- which is
+    # what a hand-written `boxes=N` per row was. `wl` touches no VM state, so it is safe to ask
+    # from inside a box (the only way to be there is an input-script `break`).
+    # ⛔ NOT line-anchored: ScummVM interleaves the `debug> ` prompt with its own output, so an
+    # anchored pattern misses exactly the reads that follow a resume. Same trap as `_MARK`.
+    _WINDOW = re.compile(
+        r"(\d+): '([^']*)' at (-?\d+), (-?\d+), "
+        r"\((-?\d+), (-?\d+), (-?\d+), (-?\d+)\), drawn: (\d+), style: (\d+)")
+
+    def windows(self):
+        """The SCI Windows currently open, outermost first. A message box IS one of these.
+
+        Returns [{id, title, at, rect, drawn, style}]. An ordinary room with nothing on screen
+        answers with an empty list, so a non-empty answer means something is waiting."""
+        out = self.cmd("wl")
+        return [{"id": int(m.group(1)), "title": m.group(2),
+                 "at": (int(m.group(3)), int(m.group(4))),
+                 "rect": tuple(int(m.group(i)) for i in (5, 6, 7, 8)),
+                 "drawn": int(m.group(9)), "style": int(m.group(10))}
+                for m in self._WINDOW.finditer(out)]
+
     def room(self):
         m = re.search(r"Current room number is (\d+)", self.cmd("room"))
         return int(m.group(1)) if m else None

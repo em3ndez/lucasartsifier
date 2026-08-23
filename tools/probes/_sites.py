@@ -60,6 +60,56 @@ def _arms(text, start, end):
     return out
 
 
+ADD = re.compile(r"\(=\s*global9\s+self\)\s*add:|\(global9\s+add:", re.S)
+
+
+def items(src_dir):
+    """index -> inventory instance name, read from the `(global9 add: ...)` KQInv builds.
+
+    Every item number in an emitted guard is `(global9 indexOf: (global69 curInvIcon:))`, i.e. a
+    position in THIS list -- so reading the list is the only way to get names that agree with the
+    numbers by construction. A hand-typed table drifts, and `KQ5-LITE-TESTPLAN.md` already proved
+    it can: it had two items' bits swapped.
+    """
+    for name in sorted(os.listdir(src_dir)):
+        if not name.endswith(".sc"):
+            continue
+        text = open(os.path.join(src_dir, name), errors="replace").read()
+        m = ADD.search(text)
+        if not m:
+            continue
+        # `((= global9 self) add: ...)` -- the receiver is itself a form, so the arg list ends at
+        # the close of the form OUTSIDE it, not of the receiver.
+        outer = text.rindex("(", 0, m.start()) if text[m.start():m.start() + 2] == "(=" \
+            else m.start()
+        _, end = _span(text, outer)
+        args, i = [], m.end()
+        while i < end:
+            ch = text[i]
+            if ch == "{":
+                k = text.find("}", i)
+                i = (k if k > 0 else i) + 1
+                continue
+            if ch == "(":                       # `(Pie cursor: pieCursor yourself:)`
+                a, b = _span(text, i)
+                w = re.match(r"\(\s*(\w+)", text[a:b])
+                if w:
+                    args.append(w.group(1))
+                i = b
+                continue
+            if ch == ")":
+                break
+            w = re.match(r"[A-Za-z_]\w*", text[i:])
+            if w:
+                args.append(w.group(0))         # a bare name, e.g. `Ok`
+                i += w.end()
+                continue
+            i += 1
+        if args:
+            return dict(enumerate(args))
+    raise RuntimeError("no `global9 add:` inventory list under %s" % src_dir)
+
+
 def sites(src_dir):
     """[{file, word, mask, item, owner}] -- one row per (bit, owner) the patch actually emits.
 
@@ -98,9 +148,11 @@ def sites(src_dir):
 
 if __name__ == "__main__":
     import sys
+    names = items(sys.argv[1])
     rs = sites(sys.argv[1])
     offers = [r for r in rs if r["item"] is not None]
     print("%d emitted sites; %d are inventory offers" % (len(rs), len(offers)))
     for r in sorted(rs, key=lambda r: (r["word"], r["mask"])):
-        print("  %-11s g%d $%04x  item=%-5s %s"
-              % (r["file"], r["word"], r["mask"], r["item"], r["owner"]))
+        print("  %-11s g%d $%04x  item=%-3s %-14s %s"
+              % (r["file"], r["word"], r["mask"], r["item"],
+                 names.get(r["item"], "-"), r["owner"]))

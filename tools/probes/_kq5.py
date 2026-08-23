@@ -17,6 +17,150 @@ FIRST_ROOM = 2              # past the title/intro rooms means we are playing
 FIRST_PLAYABLE = 1          # KQ5 opens outside Graham's house; rm001.sc is a real room
 
 
+# Somewhere off the icon bar's strip and inside the picture. See park_mouse.
+PARK = (160, 150)
+
+
+def here(c):
+    """The room the game is actually IN. This is GLOBAL 11.
+
+    ⛔ NOT `c.room()`. That prints ScummVM's `currentRoomNumber()`, which reads GLOBAL 13 -- the
+    room last ASKED for. Writing 13 and reading it back always agrees, so it cannot witness a
+    teleport, and it spent a whole row's worth of debugging confirming a room change that never
+    happened (`room 206` answered "206" while Graham stood outside his house). `Game:newRoom` is
+    what moves global 11, and `Game:doit` is what calls it."""
+    return c.gint(11)
+
+
+def park_mouse(c, at=PARK, tag="park", wait=1500, log=print):
+    """Move the virtual mouse off the icon bar's top strip, and wait for the bar to go away.
+
+    ⛔⛔ THIS IS NOT COSMETIC -- it is the precondition for the game running at all.
+
+    `IconBar:handleEvent` opens the bar whenever there is NO event and the mouse is inside the
+    top strip, and `IconBar:doit` then spins a loop of its own:
+
+        (method (doit) (while (& state $0020) ... (GetEvent 32767 ibEvent) ...
+                                                 (if (self dispatchEvent: ibEvent) (break))))
+
+    While that loop runs, `Game:doit` never gets a cycle. `Game:doit` is BOTH the thing that
+    performs `(if (!= global13 global11) (self newRoom: global13))` AND the thing that hands
+    events to the room, so with the bar up a teleport is inert and every click is eaten.
+
+    The scripted-input transport starts its virtual mouse at the top left, so the bar comes up by
+    itself before a probe has done anything. Measured, one variable at a time:
+
+        room 206, then 6s of game time      -> global11 = 1    (bar state $0420, i.e. shown)
+        one `move 160 150` step             -> global11 = 206  (bar state $0404)
+
+    ⭐ And this is exactly why LA6 passed while the first market row did not. `offer_script`
+    happens to begin with a `move` step, and a move to open ground is what
+    `IconBar:dispatchEvent` reads as "the mouse left the bar" -- it returns 1 and breaks the
+    modal loop. LA6 dismissed the bar as a side effect of aiming. `goto` has nothing to aim, so
+    nothing ever dismissed it, and every market row inherited that.
+    """
+    c.cmd("script clear")
+    c.cmd("script add t=+200 move %d %d" % at)
+    c.cmd("script add t=+%d mark %s" % (wait, tag))
+    c.cmd("script add t=+%d break" % (wait + 100))
+    c.resume(seconds=60, instructions=3000000)
+    return c.wait_mark(tag, timeout=10)
+
+
+def idle_windows(c):
+    """How many SCI Windows are open when nothing is being said.
+
+    A message box IS a Window, so "is a box up?" is `len(c.windows()) > this`. Measured once per
+    session in a room known to be quiet rather than assumed, because it is a property of the game
+    (KQ5 keeps its picture port in the window list; a game that does not would answer 0)."""
+    return getattr(c, "_kq5_idle_windows", 1)
+
+
+def _run(c, tag, key=None, wait=1200, settle=1200):
+    """Give the game a measured stretch of GAME time, optionally pressing one key inside it.
+
+    ⛔ The mouse is parked first even when nothing is pressed. If the click that opened a box
+    left the pointer in the icon bar's top strip, the bar -- not the box -- is what receives the
+    next Return: it selects an icon, the box stays, and the arm behind it stays parked. A move
+    does not dismiss a box (`Dialog::doit` ends on a click or a Return, not on motion), so the
+    park costs nothing but rules that out. See park_mouse."""
+    c.cmd("script clear")
+    c.cmd("script add t=+200 move %d %d" % PARK)
+    if key:
+        c.cmd("script add t=+%d key %s" % (wait, key))
+    c.cmd("script add t=+%d mark %s" % (wait + settle, tag))
+    c.cmd("script add t=+%d break" % (wait + settle + 100))
+    c.resume(seconds=60, instructions=3000000)
+    return c.wait_mark(tag, timeout=10)
+
+
+def _press_return(c, tag, wait=1200, settle=1200):
+    return _run(c, tag, key="return", wait=wait, settle=settle)
+
+
+def box_open(c):
+    """Is a message box on screen? One more Window than the room keeps when it is quiet."""
+    return len(c.windows()) > idle_windows(c)
+
+
+def drain_boxes(c, tag, max_boxes=12, log=print):
+    """Dismiss every message box that is actually OPEN, and return how many there were.
+
+    ⭐ The count is READ, not predicted. `window_list` names the open Windows, so this presses
+    Return once per box that exists instead of once per box a test plan expects -- and both ways
+    of getting that number wrong were observed to fake a guard result:
+
+      one too FEW  -- the arm stays parked at `Dialog::doit` and its effects land in the NEXT
+                      attempt's window, which reads exactly like a guard that did not fire
+      one too MANY -- the spare Return starts a FRESH offer, because the item is still on the
+                      cursor, which reads like a guard that fired twice
+
+    Returns (said, boxes). `said` is everything the game printed while draining.
+    """
+    said, n = [], 0
+    while n < max_boxes:
+        if not box_open(c):
+            break
+        n += 1
+        _press_return(c, "%s_b%d" % (tag, n))
+        said += c.said()
+    else:
+        log("  ⚠️ still a box open after %d dismissals -- something is talking in a loop" % n)
+    return said, n
+
+
+def settle_room(c, tag="settle", rounds=40, log=print):
+    """Run the room until it is IDLE, dismissing whatever it says on the way.
+    Returns (said, boxes).
+
+    ⛔ Every market arm sits under `(not (global2 script:))`, so an offer made while the room is
+    still running a script of its own is dropped in SILENCE -- indistinguishable, from outside,
+    from a guard that did not fire. And the rooms that matter greet you at length: walking into
+    the bakery starts `walkInScript` -> `doWinners`, a 22-state cutscene of dialogue boxes,
+    `(= cycles 15)` pauses and two characters walking off, and only its successor `greet` ends
+    with `(client setScript: 0)`.
+
+    ⛔ So this cannot be a fixed number of Returns. Half of what the room is waiting for is TIME,
+    not input: a round with no box open presses nothing and simply gives the room cycles.
+    """
+    said, boxes = [], 0
+    for i in range(rounds):
+        script = c.send(c.gaddr(2), "script")[0]
+        if not script and not box_open(c):
+            if i:
+                log("  room %s settled after %d round(s), %d box(es)" % (here(c), i, boxes))
+            return said, boxes
+        if box_open(c):
+            _press_return(c, "%s%d" % (tag, i))
+            boxes += 1
+        else:
+            _run(c, "%s%d" % (tag, i))              # the room wants CYCLES, not a keystroke
+        said += c.said()
+    log("  ⚠️ room %s never went idle in %d rounds (global2 script: = %s)"
+        % (here(c), rounds, c.send(c.gaddr(2), "script")[0]))
+    return said, boxes
+
+
 def boot(c, rounds=12, log=print, teleport=False):
     """Get to a playable room. Returns the room we landed in.
 
@@ -43,7 +187,16 @@ def boot(c, rounds=12, log=print, teleport=False):
         c.resume(2)                                # let script 0 come up
         c.cmd("room %d" % FIRST_PLAYABLE)
         c.resume(3)
-        room = c.room()
+        if getattr(c, "input_script", None):
+            # ⛔ The very first thing after a boot has to be to get the icon bar out of the way,
+            # or nothing that follows runs -- see park_mouse. Everything downstream of this line
+            # depends on `Game:doit` getting cycles.
+            park_mouse(c, log=log)
+            c._kq5_idle_windows = len(c.windows())     # the quiet-room baseline, MEASURED
+            log("  idle window count = %d (a message box is one MORE than this)"
+                % c._kq5_idle_windows)
+            settle_room(c, tag="boot", log=log)
+        room = here(c)
         log("  booted (pipe, teleport) to room %s" % room)
         return room
 
@@ -73,13 +226,19 @@ SHOP_ROOM = 5
 BOUNCE_ROOM = 4                              # the town square, room 5's own neighbour
 
 
-def goto(c, room, settle=6.0, log=print):
-    """Teleport, handling the room-5 shops.
+def goto(c, room, settle=6.0, tries=3, log=print):
+    """Teleport, handling the room-5 shops, and VERIFY that the game moved.
 
-    `room N` is a real room change -- KQ5's `Game:doit` polls `(if (!= global13 global11)
-    (self newRoom: global13))` every cycle, so writing global 13 makes the game perform its own
-    `newRoom:`. What it cannot do is reach something that is not a room; for those, this sets up
-    room 5 instead and reports the room it actually landed in (5), not the region number."""
+    `room N` only writes global 13. KQ5's `Game:doit` polls
+    `(if (!= global13 global11) (self newRoom: global13))` every cycle, so the game performs the
+    change itself -- but only while `Game:doit` is getting cycles at all, which the icon bar's
+    modal loop can prevent outright (see park_mouse). What it can never reach is something that
+    is not a room; for those this sets up room 5 instead and reports the room actually landed in.
+
+    ⛔ The check is `here(c)` (global 11), never `c.room()` (global 13). Global 13 is the room
+    ASKED for, so reading it back after writing it confirms nothing: it reported a bakery that
+    the game had not moved to, and every offer aimed into that bakery was landing in room 1.
+    """
     target, region = room, None
     if room in SHOP_REGIONS:
         region = SHOP_REGIONS[room]
@@ -87,24 +246,34 @@ def goto(c, room, settle=6.0, log=print):
         target = SHOP_ROOM
         log("  script %d is a REGION of room %d; global313=%d" % (room, SHOP_ROOM, region))
 
-    # ⛔ A room change to the room you are ALREADY in is a no-op. The game acts on global 13 only
-    # when it differs from global 11 (`(if (!= global13 global11) (self newRoom: global13))`), so
-    # `room 5` while standing in room 5 changes nothing -- and for the shops that matters, because
-    # the shop you are in is chosen by global313 AT init. Switching from the tailor to the toy shop
-    # therefore silently leaves you in the tailor, with `?toyMaker` simply not existing. Bounce out
-    # and back so init runs again.
-    if c.room() == target:
+    # ⛔ A room change to the room you are ALREADY in is a no-op, because the game acts on global
+    # 13 only when it differs from global 11. That matters most for the shops: which one you are
+    # in is chosen by global313 AT init, so `room 5` while standing in the tailor silently leaves
+    # you in the tailor, with `?toyMaker` simply not existing. Bounce out and back so init reruns.
+    if here(c) == target:
         log("  already in room %d; bouncing via %d so init re-runs" % (target, BOUNCE_ROOM))
-        c.cmd("room %d" % BOUNCE_ROOM)
+        _land(c, BOUNCE_ROOM, settle, tries, log)
+
+    got = _land(c, target, settle, tries, log)
+    log("  room %d -> %s" % (target, got))
+    settle_room(c, log=log)
+    return got
+
+
+def _land(c, target, settle, tries, log):
+    """Ask for `target` and keep the game running until global 11 says it arrived."""
+    for attempt in range(tries):
+        if getattr(c, "input_script", None):
+            park_mouse(c, log=log)                 # a shown icon bar swallows the whole teleport
+        c.cmd("room %d" % target)
         c.resume(settle)
         c.open()
-
-    c.cmd("room %d" % target)
-    c.resume(settle)
-    c.open()
-    got = c.room()
-    log("  room %d -> %s" % (target, got))
-    return got
+        if here(c) == target:
+            return target
+        log("  room %d did not take (global11=%s, global13=%s); attempt %d/%d"
+            % (target, here(c), c.gint(13), attempt + 1, tries))
+    raise RuntimeError("the game never entered room %d (global11=%s, global13=%s)"
+                       % (target, here(c), c.gint(13)))
 
 
 def event_class(c):
@@ -282,32 +451,29 @@ def arm_item(c, item, log=print):
     return use_icon
 
 
-def offer_script(c, target, item, tag, boxes=2, settle=3000, gap=2000, delay=800, log=print):
-    """Hand `item` to `target` with a SCRIPTED CLICK, drain the message boxes, come back at a
-    known point in GAME time. Returns (said, virtual_time).
+def offer_script(c, target, item, tag, boxes=None, settle=2500, delay=1000, log=print):
+    """Hand `item` to `target` with a SCRIPTED CLICK, dismiss whatever it says, and come back at
+    a known point in GAME time. Returns (said, virtual_time, aim).
 
     This is the shape every guard row wants. Needs a build carrying
     tools/scummvm-patches/0004 and a session started with --input-script.
 
-    ⛔ `boxes` IS PART OF THE TEST, not a timeout to pad. A guard's message box is
-    `Dialog::doit` polling kGetEvent -- it waits for INPUT, not for time, so no clock control
-    ends it and everything after it in the arm is unreached until it goes. Box 1 is the action's
-    own message and always plays; a second box plays whenever the guard has something to say.
-    Get the count wrong in either direction and the row lies:
+    ⭐ THE BOX COUNT IS MEASURED, not passed in. `drain_boxes` reads `window_list` and presses
+    Return once per box that is actually open, so neither of the two ways of getting it wrong can
+    happen any more: too few parks the arm at `Dialog::doit` and its effects land in the NEXT
+    attempt's window (which reads as a guard that did not fire), too many starts a FRESH offer
+    because the item is still on the cursor (which reads as a guard that fired twice). Both were
+    observed while the count was a hand-written argument. `boxes`, if given, is an EXPECTATION
+    from the emitted arm's shape and is only reported against -- it never drives the run.
 
-      too FEW  -- the arm stays parked and its effects land in the NEXT attempt's window, which
-                  reads exactly like a guard that did not fire
-      too MANY -- the extra Return starts a FRESH offer, because the item is still on the
-                  cursor, which reads like a guard that fired twice
+    Dismissal is RETURN, not a click: a dismissing click would also be an offer wherever it
+    lands, and SPACE does not dismiss at all.
 
-    Both were observed before the count was made explicit. Dismiss with RETURN: a dismissing
-    CLICK would also be an offer wherever it lands, and SPACE does not dismiss at all.
+    `tag` must be unique per attempt -- a mark from a previous attempt is still in the buffer and
+    would satisfy the wait instantly.
 
-    `tag` must be unique per attempt -- a mark from the previous attempt is still in the buffer
-    and would satisfy the wait instantly.
-
-    Returns (said, virtual_time, aim) where `aim` carries the click point and the target's box
-    before and after -- see the comment at the return.
+    `aim` carries where the click went and the target's box before and after, so a caller can
+    tell an offer that MISSED apart from a guard that did not fire.
     """
     arm_item(c, item, log=log)
     # ⛔ Re-read the box for EVERY offer. Half these targets are Actors, and an Actor walks.
@@ -315,30 +481,33 @@ def offer_script(c, target, item, tag, boxes=2, settle=3000, gap=2000, delay=800
     cx = (box["nsLeft"] + box["nsRight"]) // 2
     cy = (box["nsTop"] + box["nsBottom"]) // 2
     c.said()                                            # drop the setup's chatter
+    base = len(c.windows())
+    if base != idle_windows(c):
+        log("  ⚠️ %d window(s) open before the offer, expected %d -- something is still talking"
+            % (base, idle_windows(c)))
 
     # Authored HERE, not in a file: where to click is a live nsRect.
+    # Step 1 is a PARK, not an approach: it puts the mouse below the icon bar's strip so the
+    # bar's modal loop is not holding the game when the click arrives (see park_mouse). `click`
+    # emits its own move, so nothing is lost by aiming this step elsewhere.
     c.cmd("script clear")
-    c.cmd("script add t=+200 move %d %d" % (cx, cy + 30))
+    c.cmd("script add t=+200 move %d %d" % PARK)
     c.cmd("script add t=+%d click %d %d" % (delay, cx, cy))
-    t = delay
-    for _ in range(boxes):
-        t += gap
-        c.cmd("script add t=+%d key return" % t)
-    c.cmd("script add t=+%d mark %s" % (t + settle, tag))
-    c.cmd("script add t=+%d break" % (t + settle + 100))
-    log("  click (%d,%d) on %s, %d box(es) to dismiss, sample at t=+%dms"
-        % (cx, cy, target, boxes, t + settle))
+    c.cmd("script add t=+%d mark %s_c" % (delay + settle, tag))
+    c.cmd("script add t=+%d break" % (delay + settle + 100))
+    log("  click (%d,%d) on %s" % (cx, cy, target))
     # The countdown is only a backstop: `break` is what should bring us back. If it does not,
     # wait_mark says so instead of the probe hanging.
     c.resume(seconds=60, instructions=3000000)
-    at = c.wait_mark(tag, timeout=5)
-    # ⭐ Return WHERE IT WAS AIMED and where the target is NOW, so a caller can tell the two ways
-    # an offer looks like nothing happened apart. `offer()` had this as the event's `claimed`
-    # flag; a real click has no such flag, so the box is the next best witness. Without it a
-    # probe that simply MISSED reports a guard that did not fire -- which is what the first
-    # market row did.
-    return c.said(), at, {"aimed": (cx, cy), "box_before": box,
-                          "box_after": nsrect(c, target, tries=1, log=lambda *a: None)}
+    at = c.wait_mark("%s_c" % tag, timeout=10)
+    said = c.said()
+    drained, n = drain_boxes(c, tag, log=log)
+    said += drained
+    if boxes is not None and n != boxes:
+        log("  ⚠️ %d box(es) raised, the arm's shape predicted %d" % (n, boxes))
+    log("  -> %d box(es) dismissed at t=%d" % (n, at))
+    return said, at, {"aimed": (cx, cy), "boxes": n, "box_before": box,
+                      "box_after": nsrect(c, target, tries=1, log=lambda *a: None)}
 
 
 def offer(c, ev, target, item, box=None, aim=None, log=print):
