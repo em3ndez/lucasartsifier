@@ -34,16 +34,118 @@ def boot(c, rounds=12, log=print):
     return room
 
 
-def goto(c, room, settle=6.0, log=print):
-    """Change rooms the way the GAME does.
+# The town interiors that are REGIONS inside room 5, not rooms of their own. Room 5's `init`
+# switches on global313 to pick the pic and the region -- so the way in is to set that first and
+# then go to room 5. `room 203/204/205` points the game at a script whose export 0 is a `Rgn`,
+# and it dies sending Room messages to a Region. See `_rooms.py`.
+SHOP_REGIONS = {203: 1, 204: 2, 205: 3}      # script number -> the global313 value that loads it
+SHOP_ROOM = 5
 
-    ⛔ The console's `room N` only writes global 13. It does not load the script, does not run
-    `init:`, and does not touch `prevRoom` -- so the number changes and nothing else does. KQ5's
-    own room change is `(global2 newRoom: N)`, so that is what a probe should send. It is also
-    what makes teleporting out of the intro work at all."""
-    c.cmd("send %s newRoom %d" % (c.gaddr(2), room))
+
+def goto(c, room, settle=6.0, log=print):
+    """Teleport, handling the room-5 shops.
+
+    `room N` is a real room change -- KQ5's `Game:doit` polls `(if (!= global13 global11)
+    (self newRoom: global13))` every cycle, so writing global 13 makes the game perform its own
+    `newRoom:`. What it cannot do is reach something that is not a room; for those, this sets up
+    room 5 instead and reports the room it actually landed in (5), not the region number."""
+    target, region = room, None
+    if room in SHOP_REGIONS:
+        region = SHOP_REGIONS[room]
+        c.setg(313, region)
+        target = SHOP_ROOM
+        log("  script %d is a REGION of room %d; global313=%d" % (room, SHOP_ROOM, region))
+    c.cmd("room %d" % target)
     c.resume(settle)
     c.open()
     got = c.room()
-    log("  newRoom %d -> room %s" % (room, got))
+    log("  room %d -> %s" % (target, got))
     return got
+
+
+def event_class(c):
+    """The Event CLASS's address, pinned ONCE.
+
+    ⛔ `?Event` resolves only until the first `Event new:`. After that the name matches the class
+    AND every live instance, and the console answers an ambiguous name with a candidate list
+    instead of an address -- so a probe that re-resolves the name works on its first interaction
+    and fails on its second, which reads like the game hanging rather than like a name lookup.
+
+    ⛔ And "resolve it before making one" does not work either: the resolving call IS a `new:`.
+    So force one instance deliberately, then read the class off the ambiguity list, where index 0
+    is the class (it lives in a script segment; the instances are clones)."""
+    import re
+    c.cmd("send ?Event new")                       # guarantee the name is ambiguous
+    out = c.cmd("vo ?Event")
+    m = re.search(r"0:\s*\[([0-9a-f]{4}:[0-9a-f]{4})\]", out, re.I)
+    if not m:
+        raise RuntimeError("could not pin the Event class from: %r" % out[:400])
+    return m.group(1)
+
+
+def nsrect(c, obj, tries=6, log=print):
+    """An object's nsRect, waiting for the room to actually draw it.
+
+    ⛔ Straight after a room change every Prop reads 0,0,0,0, an event aimed at (0,0) fails the
+    hit test, the handler returns silently -- and the probe reports "no refusal" for a guard it
+    never reached. The ego always has a box, which is why script-0 guards are the easy targets."""
+    import re
+    for _ in range(tries):
+        txt = c.cmd("vo " + obj)
+        got = {m.group(1): int(m.group(2), 16) for m in
+               re.finditer(r"(nsLeft|nsTop|nsRight|nsBottom)\s*=\s*[0-9a-f]{4}:([0-9a-f]{4})", txt)}
+        if got.get("nsRight"):
+            return got
+        log("  %s not drawn yet (%s); letting the room run" % (obj, got))
+        c.resume(2.0)
+        c.open()
+    raise RuntimeError("%s never got an nsRect" % obj)
+
+
+def offer(c, event_addr, target, item, box):
+    """Hand `item` to `target` the way a click does.
+
+    A handler wants an event that is type 16384, carries message 4, and lands inside the target's
+    nsRect (`proc255_5` is a bounding-box test). All three are writable, so a click is
+    constructible. Returns whatever the game printed (see Console.said)."""
+    import re
+    cx = (box["nsLeft"] + box["nsRight"]) // 2
+    cy = (box["nsTop"] + box["nsBottom"]) // 2
+    c.cmd("send %s curInvIcon ?%s" % (c.gaddr(69), item))
+    raw = c.send(event_addr, "new")[1]
+    m = re.search(r"Value returned:\s*([0-9a-f]{4}:[0-9a-f]{4})", raw, re.I)
+    if not m:
+        raise RuntimeError("Event new: returned nothing: %r" % raw[:200])
+    ev = m.group(1)
+    for sel, val in (("type", 16384), ("message", 4), ("x", cx), ("y", cy), ("claimed", 0)):
+        c.cmd("send %s %s %d" % (ev, sel, val))
+    c.said()                                       # drop whatever the setup printed
+    c.cmd("send %s handleEvent %s" % (target, ev))
+    c.resume(1.2)
+    c.key("Return", n=2, settle=0.6)               # a refusal is a print; dismiss it
+    import time as _t
+    _t.sleep(1.0)
+    c.open()
+    return c.said()
+
+
+def wait_spent(c, ego, item, cycles=6, slice_s=1.5, log=print):
+    """Poll `ego has: item` while letting the game run. Returns True once the item is gone.
+
+    ⛔ Disposal is not always inline. Script 0's EAT does `(global0 put: 2 1)` right in the
+    handler, so the item is gone the instant `handleEvent` returns -- but the toymaker's handler
+    only does `setScript: getSled`, and the payment is taken in that script's `changeState` state
+    0 (`(global0 put: 9 204)`). Between those two shapes sits a race: sampling `has:` once after a
+    fixed sleep passes for the first, and passes for the second only when the script happened to
+    get its cycle in. It read OK for the needle and WRONG for the heart in the same run, at the
+    same site, which is the signature of a timing oracle rather than a broken guard.
+
+    Which shape a site has is readable from the emitted source: `put:` in the handler is inline,
+    `setScript:` is deferred. Rather than encode that per site, poll."""
+    for i in range(cycles):
+        if c.send(ego, "has", item)[0] == 0:
+            return True
+        c.resume(slice_s)
+        c.open()
+    log("  item %d still held after %d cycles" % (item, cycles))
+    return False

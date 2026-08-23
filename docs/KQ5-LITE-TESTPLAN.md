@@ -41,6 +41,24 @@ Mode lives in `global402`; the warn bits in `global403` (16 sites) and `global40
 
 ⭐ Clearing the two warn words is the fastest way to re-test a row you have already spent.
 
+## ⛔ Three of the numbers below are NOT rooms
+
+The town interiors are **Regions layered into room 5**, not rooms of their own — room 5's `init`
+switches on `global313` to pick which shop you are standing in. So `room 204` points the game at a
+script whose export 0 is a `Rgn`, and it dies a few seconds later somewhere unrelated.
+
+| to reach | do |
+|---|---|
+| **tailor** (203) | `vmvars g 313 1` then `room 5` |
+| **toy shop** (204) | `vmvars g 313 2` then `room 5` |
+| **shoe shop** (205) | `vmvars g 313 3` then `room 5` |
+| **bakery** (206) | `room 206` — this one really is a room (`bakeShop of KQ5Room`) |
+
+The bakery being a genuine room next door to three that are not is what makes the failure look
+arbitrary. Same trap for the other region scripts these plans name by number: **200** (witch),
+**202** (owl), **220** (boatRegion), **550** (castle), **551** (toad), **552** (spider).
+`python3 tools/probes/_rooms.py <patch_project>/src` lists them from the decompiled source.
+
 ## Items (alphabetical — `send ego get N`)
 
 | item | # | item | # | item | # |

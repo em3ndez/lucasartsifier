@@ -30,7 +30,7 @@ The console is a full read/write window onto the live VM:
 | call any method, write any property, get the return | `send ?toyMaker handleEvent 1a:0c` |
 | dump every property of an object | `vo ?toyMaker` |
 | resolve an object **by the name in our decompiled source** | `?Heart`, `?toyShop` |
-| teleport | `send <game> newRoom 204` — **not** `room 204`, see below |
+| teleport | `room 5` — but check the target is a ROOM first, see below |
 | every line the game PRINTS, verbatim | `bpk StrCpy log` |
 | persistence questions | `save_game` / `restore_game` / `restart_game` |
 
@@ -40,11 +40,31 @@ The last two are worth dwelling on.
 already know the guard sites by object name and the items by instance name. `?toyMaker` and
 `?Heart` resolve straight to the objects our own specs talk about.
 
-**⛔ `room N` is not a room change.** The console's `room` command writes global 13 and nothing
-else: no script load, no `init:`, no `prevRoom`. The number changes and the game does not. Use the
-game's own room change — KQ5 spells it `(global2 newRoom: N)`, so a probe sends
-`send <addr of global2> newRoom 204`. That distinction is also what makes it possible to leave the
-intro without sitting through it.
+**⛔ Not every number in a test plan is a room.** `room N` itself is fine — it writes global 13,
+and KQ5's `Game:doit` polls `(if (!= global13 global11) (self newRoom: global13))` every cycle, so
+the game performs its own `newRoom:`. That is the classic Sierra debug teleport and it works.
+
+What does not work is pointing it at something that is not a room. Several KQ5 town interiors are
+**Regions layered into one room**:
+
+```
+room 5's init switches on global313 --  1 -> setRegions 203 (tailor)
+                                        2 -> setRegions 204 (toy shop)
+                                        3 -> setRegions 205 (shoe shop)
+```
+
+So `room 204` sets global 13 to a number with no room behind it; the game calls `newRoom: 204`,
+gets `toyShop of Rgn` as that script's export 0, and starts sending Room messages to a Region. It
+dies — silently, seconds later — which reads as "teleporting is flaky" rather than "that was never
+a room". The bakery next door *is* a real room (`bakeShop of KQ5Room`, script 206) and `room 206`
+is fine, which is what makes the failure look arbitrary.
+
+⭐ **This is checkable statically, from our own decompiled source.** `tools/probes/_rooms.py` reads
+what export 0 of each script is an instance of; anything that is a `Rgn` is not a teleport target.
+For KQ5 that flags nine places the test plans name by number — 200, 202, 203, 204, 205, 220, 550,
+551, 552 — before a run rather than by killing a game. Note KQ5 spells some regions as `class`
+rather than `instance`; a pattern that only knows `instance` reports them as unknown, which is the
+same as reporting them safe.
 
 **`bpk StrCpy log` prints the dialogue.** Sierra's print path copies its literal through `StrCpy`,
 and ScummVM's kernel logger decodes reference arguments as text
@@ -130,9 +150,10 @@ error, which is the failure mode worth paying to avoid.
 2. **Ctrl+Alt+D is a TOGGLE.** Retrying it when the confirmation does not come back CLOSES the
    console that just opened. Probe several times per press; only press again when it is genuinely
    shut.
-3. **`room N` is not a room change** — see above. And `newRoom` out of the opening scene into a
-   town interior *killed the game outright*, so a probe that needs a specific room is better off
-   restoring a save than teleporting.
+3. **Not every number in a test plan is a room.** `room N` works; pointing it at a Region does
+   not, and the game dies seconds later somewhere else. Check the target statically first
+   (`_rooms.py`). I got this backwards at first and wrote down "`room N` is not a room change",
+   which is false — the game polls global 13 every cycle and does its own `newRoom:`.
 4. **A freshly-loaded room's Props have no bounding box.** Straight after a room change every
    `nsRect` reads `0,0,0,0`, an event aimed at (0,0) fails the hit test, the handler returns
    silently — and the probe reports "no refusal" for a guard it never reached. Let the room run
@@ -153,6 +174,22 @@ down from `atexit` **and** from SIGTERM/SIGINT/SIGHUP, and reaps anything an ear
 
 ⛔ And `pkill -f <something>` matches the shell that is running it. Use `pkill -x scummvm`. This is
 already written down in `drive_scummvm.py`; it was re-learned anyway.
+
+## Disposal is sometimes inline and sometimes deferred, and a one-shot oracle cannot tell
+
+Script 0's EAT does `(global0 put: 2 1)` right in the handler — the pie is gone the instant
+`handleEvent` returns. The toymaker's handler only does `setScript: getSled`, and the payment is
+taken in that script's `changeState` state 0 (`(global0 put: 9 204)`), several cycles later.
+
+Sampling `ego has:` once after a fixed sleep passes for the first shape, and passes for the second
+only when the script happened to get its cycle in. In one run, at one site, it read OK for the
+needle and WRONG for the heart — same guard, same code path. That is the signature of a timing
+oracle, not a broken guard, and it is exactly the kind of flake that would get "fixed" by editing
+the thing under test.
+
+Which shape a site has is readable from the emitted source (`put:` in the handler vs `setScript:`),
+but a probe should not have to encode that per site: **poll**. `wait_spent()` resumes the game a
+slice at a time until the item is gone or a budget expires.
 
 ## A name is only unambiguous until the game makes another one
 
@@ -191,7 +228,8 @@ Established by running it (KQ5, `~/sierra/patched/kq5` copied to a scratch dir, 
 
 - the console's answers reach stdout on the stock ScummVM 2.8.0 binary
 - globals read and written (`vv g 402 1` etc.), object addresses resolved, `send` calls methods
-- the game's own `newRoom:` moves rooms; `room N` does not
+- `room N` moves rooms (the game polls global 13 and calls `newRoom:` itself); what breaks it is
+  a target that is a Region rather than a room, which `_rooms.py` now catches before a run
 - ⭐ **LA6 passes end to end, driven with no hands.** Under Lite with the warn word cleared:
 
   | attempt | `global403 & $0001` | `ego has: 2` | meaning |
@@ -201,6 +239,20 @@ Established by running it (KQ5, `~/sierra/patched/kq5` copied to a scratch dir, 
 
   That is exactly the two-step the lite plan specifies for that row, checked as numbers rather
   than as a screenshot — and the whole interaction (hold the pie, EAT it) was synthesized.
+
+- ⭐ **LA1a passes, and the per-SITE independence with it.** In the toy shop (reached by
+  `global313=2` + `room 5`), under Lite with the warn word cleared:
+
+  | | `global403` | `ego has:` | |
+  |---|---|---|---|
+  | needle, try 1 | `$0200` set | needle held | refused |
+  | needle, try 2 | `$0200` set | **needle gone** | went through |
+  | *then* | `0x0200` | — | Heart and Gold_Coin still **unwarned** |
+  | heart, try 1 | `$1000` set | heart held | **refused on its own account** |
+
+  Being fully warned and spent at the needle did not buy anything at the heart. That is the
+  property `KQ5-LITE-TESTPLAN` calls "the per-site bit's whole point, and the market is the only
+  place it can be checked cheaply" — and it is now checked, by machine, in one run.
 
 Not established:
 
