@@ -243,16 +243,15 @@ def offer_click(c, target, item, seconds=6.0, log=print):
 
     import time as _t
     log("  click (%d,%d) on %s" % (cx, cy, target))
-    c.resume(seconds, during=act)
-    # ⛔ Let the handler FINISH -- and note WHERE the waiting has to happen. `debug_countdown`
-    # re-enters wherever the VM is, which for a speaking guard is inside the print, waiting on CD
-    # speech. The speech needs REAL TIME, and real time only passes at the debugger prompt (with
-    # the local ScummVM patch; without it, not even there). Bursts alone never finish it, because
-    # the driver returns to the prompt and immediately issues the next command. So: sit at the
-    # prompt for a moment, THEN give it another burst to notice.
-    for _ in range(6):
-        _t.sleep(1.2)                                   # time passes here, thanks to the patch
-        c.resume(2)
+    # ONE long free run with the click inside it. Proven on the stock binary: the interaction
+    # completes exactly as in real play. ⛔ Do not chop this into short bursts -- see below.
+    c.resume(seconds, during=act, at=1.5)
+    # ⛔ USE THE STOCK BINARY FOR THIS. On the text-console build the interaction stops dead at
+    # the print, every time, in every mode -- proven by running this identical code on both:
+    #     stock binary        after: has_pie=0   <- eaten, i.e. the arm completed
+    #     text-console build  after: has_pie=1   <- parked at the print
+    # No amount of countdown tuning, dismissal clicking, real-time waiting or event pumping
+    # changed the second one. The pipe transport is for STATE; interaction needs the stock build.
     return c.said(), (cx, cy)
 
 

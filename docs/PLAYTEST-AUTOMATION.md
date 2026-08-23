@@ -395,23 +395,36 @@ Ruled out by experiment, so nobody repeats them:
 | removing the event **drain** from the patch (it was eating the game's input — a real bug, now fixed) | no change |
 | hand-set `curIcon`/`curInvIcon` vs. replicating `Inventory::showSelf` exactly | fixed one crash, did not fix this |
 
-⭐ **The user settled the fork by playing it: with guards Off, Graham eats the pie.** So the game
-is fine, the build is fine, and the fault is in the driving. That also retires "boot properly
-instead of teleporting" — the probe now plays the intro for real (rooms 99 → 119 → 1) and the
-result is unchanged.
+⭐ **The fork is settled, and the answer is the build.** The identical probe code, same game copy,
+same click, differing only in which ScummVM runs it:
 
-⛔ **A conclusion drawn here was wrong, and the control caught it.** `bpx put` never fired, which
-looked like proof that the disposal is never called. Then `bpx doit` — on a method that runs every
-single cycle — did not fire either. **Breakpoints do not work in this setup at all**, so the first
-result said nothing. Any future use of `bpx`/`sg` here needs its control run first; `sg` is also
-too slow to be usable, since it makes the VM run `scriptDebug()` per instruction.
+| binary | Off mode, click the pie on Graham | |
+|---|---|---|
+| **stock** (graphical console) | `has_pie=0` | the arm completes — the pie is eaten |
+| **text-console build** | `has_pie=1` | parked at the print, every time |
 
-⭐ **What that failure hints at, and the best remaining lead**: in both breakpoint runs the game
-was let go with a bare `exit` and NO countdown, and produced *total silence* for 45–90 seconds —
-no output, no reaction to a click. That is consistent with the VM not actually resuming after a
-bare `exit`. If true it would explain everything at once, because every "the arm stopped" reading
-was taken after handing control back this way. **Check that first**: `exit`, then watch whether
-anything at all moves (a global that ticks, a `kStrCpy` line) without a countdown armed.
+So the click path is sound and the text-console build is what breaks interaction. Nothing tried
+changed the second row: countdown tuning, one 40-second free run, dismissal clicks in both
+regimes, real-time waits at the prompt, the event-pumping patch, removing its drain, muting or
+un-muting speech.
+
+The user also confirmed by playing: **with guards Off, Graham eats the pie.** That is what made
+the comparison above worth running, and it ruled out the game and the patch set in one move.
+
+⛔ **Two of my own conclusions here were wrong, and controls caught both.** `bpx put` never firing
+looked like proof the disposal is never called — until `bpx doit`, on a method that runs every
+cycle, also never fired: **breakpoints do not work in this setup at all**. And a "the game stalls
+after a bare `exit`" reading came from misreading *incremental* counts as cumulative; the game
+actually runs steadily at ~97 cycles/s. Run the control first.
+
+**Where the click path stands on the stock binary.** It reaches the guard: in Lite mode the game
+prints *"Just kidding! You hold on to it because you still need it."* and correctly keeps the pie.
+But the warn bit does not read as set, and the refusal text turns up in the *next* attempt's
+window — so the arm is completing asynchronously with respect to when the probe samples. A late
+re-read six seconds on does not catch it either. That is the open thread.
+
+**The working interaction path today is still `send <obj> handleEvent <event>` on the stock
+binary**, which is how all four verified rows were driven.
 
 **Bottom line: no guard row has completed over the pipe.** The four verified rows remain the ones
 driven on the stock binary with XTEST.

@@ -320,7 +320,7 @@ class Console:
                 time.sleep(0.05)
         return False
 
-    def open(self, settle=1.5, tries=4):
+    def open(self, settle=1.8, tries=12):
         """Get the console back. Over the pipe there is nothing to do -- `resume()` hands control
         back with a countdown that re-enters the debugger by itself, so the session is always at
         a prompt when it is not deliberately running.
@@ -526,6 +526,12 @@ class Console:
                 pass
         if seconds:
             time.sleep(max(0.0, seconds - (at if during is not None else 0.0)))
+        # ⛔ Leave the caller AT A PROMPT, exactly as the pipe transport does. Without this the
+        # two transports disagree about what `resume()` means: over the pipe the countdown brings
+        # the debugger back, over XTEST the console stays CLOSED -- so every read after a resume
+        # was typed into the GAME instead of the console, and came back as "could not read
+        # global<n>" far from the cause.
+        self.open()
 
     # ---- typed reads -------------------------------------------------------------
     _REG = re.compile(r"([0-9a-f]{4}):([0-9a-f]{4})", re.I)
