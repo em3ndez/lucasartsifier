@@ -316,6 +316,52 @@ def event_class(c):
     return m.group(1)
 
 
+def _signed(v):
+    """A 16-bit SCI property as Python sees it. The console prints the raw word."""
+    return v - 0x10000 if v >= 0x8000 else v
+
+
+SCREEN = (320, 190)
+
+
+def _onscreen(box):
+    """Does this box overlap the picture at all? An off-screen actor cannot be clicked."""
+    return (box.get("nsRight", 0) > 0 and box.get("nsLeft", 0) < SCREEN[0]
+            and box.get("nsBottom", 0) > 0 and box.get("nsTop", 0) < SCREEN[1])
+
+
+def resolve(c, name, script=None, log=print):
+    """An address for the object called `name`, whatever the debugger thinks of the name.
+
+    ⛔ `?name` is not always enough. `parse_reg_t` replaces every UNDERSCORE with a SPACE before
+    matching, so `?hermit_a` asks for an object called "hermit a" -- and if the game spells it
+    any other way the answer is "Invalid address passed", which `nsrect` then reported as an
+    object that never got a box. That is indistinguishable from an actor who has not walked on
+    yet, and it cost two rows.
+
+    The fallback asks the segment manager instead: `segment_info` on the script's own segment
+    lists every object it holds, with the names the game actually uses. Underscores match any
+    single character, since that is what the decompiler substitutes them for.
+    """
+    import re
+    out = c.cmd("vo ?" + name)
+    if "Invalid address" not in out and "not an object" not in out and out.strip():
+        return "?" + name
+    if script is None:
+        raise RuntimeError("?%s does not resolve and no script number was given" % name)
+    m = re.search(r"\[([0-9a-f]{4})\]\s*S\s+script\.0*%d\b" % script,
+                  c.cmd("segtable"), re.I)
+    if not m:
+        raise RuntimeError("script %s is not loaded, so %s cannot exist here" % (script, name))
+    want = re.compile("^" + "".join("." if ch == "_" else re.escape(ch) for ch in name) + "$")
+    for addr, got in re.findall(r"\[([0-9a-f]{4}:[0-9a-f]{4})\]\s*(\S+)\s*:",
+                                c.cmd("seginfo %d" % int(m.group(1), 16))):
+        if want.match(got):
+            log("  ?%s did not resolve; script %s calls it %r at %s" % (name, script, got, addr))
+            return addr
+    raise RuntimeError("script %s holds no object matching %r" % (script, name))
+
+
 def nsrect(c, obj, tries=6, log=print):
     """An object's nsRect, waiting for the room to actually draw it.
 
@@ -325,16 +371,20 @@ def nsrect(c, obj, tries=6, log=print):
     import re
     for _ in range(tries):
         txt = c.cmd("vo " + obj)
-        got = {m.group(1): int(m.group(2), 16) for m in
+        got = {m.group(1): _signed(int(m.group(2), 16)) for m in
                re.finditer(r"(nsLeft|nsTop|nsRight|nsBottom)\s*=\s*[0-9a-f]{4}:([0-9a-f]{4})", txt)}
-        if got.get("nsRight"):
+        # ⛔ ON SCREEN, not merely non-zero. Room 6's cat starts at x -80 and walks in, so its
+        # box is negative for the first seconds -- and read as unsigned that is 65456, whose
+        # midpoint is a click at x=65518. The probe reported "0 boxes, the click reached
+        # nothing", which is indistinguishable from a guard that did not fire.
+        if got.get("nsRight") and _onscreen(got):
             return got
         if tries == 1:
             return got                             # diagnostic call -- report, do not wait
-        log("  %s not drawn yet (%s); letting the room run" % (obj, got))
+        log("  %s not on screen yet (%s); letting the room run" % (obj, got))
         c.resume(2.0)
         c.open()
-    raise RuntimeError("%s never got an nsRect" % obj)
+    raise RuntimeError("%s never got an on-screen nsRect (last %s)" % (obj, got))
 
 
 def game_event(c, names=("?uEvt", "?ibEvent")):
@@ -471,7 +521,73 @@ def arm_item(c, item, log=print):
     return use_icon
 
 
-def offer_script(c, target, item, tag, boxes=None, settle=2500, delay=1000, log=print):
+def port_origin(c):
+    """Where the picture window sits on screen -- the offset between an nsRect and a CLICK.
+
+    ⛔⛔ AN nsRect IS NOT A SCREEN COORDINATE. `User:handleEvent` calls `(param1 localize:)`
+    before handing the event to anything, which subtracts the current port's origin; an object's
+    nsRect is already in that port's coordinates. KQ5's picture window sits at (0, 10), so a
+    click authored at the middle of an nsRect is tested TEN PIXELS ABOVE the middle.
+
+    ⛔ That was true of every offer this harness has ever made, and it was invisible because it
+    is smaller than most targets:
+
+        baker   box y 63..89  (26 tall)  centre 76  -> tested at 66   inside  -> the row passed
+        tailor  box y 98..143 (45 tall)  centre 120 -> tested at 110  inside  -> the row passed
+        eagle   box y 121..138 (17 tall) centre 129 -> tested at 119  OUTSIDE -> nothing at all
+
+    Measured: a LOOK click at the eagle's centre produces nothing and the same click ten pixels
+    lower produces his description; the baker answers at both. A bias hidden by tolerance is
+    exactly the shape that eventually reports a working guard as broken.
+
+    Read, not assumed: the window list gives the origin, and a game whose port is elsewhere
+    gets its own answer."""
+    wins = c.windows()
+    if not wins:
+        return (0, 0)
+    pic = max(wins, key=lambda w: (w["rect"][2] - w["rect"][0]) * (w["rect"][3] - w["rect"][1]))
+    return pic["at"]
+
+
+def icons(c):
+    """The icon bar's icons, as [(index, address, message)].
+
+    The bar is what turns a click into a verb: `IconBar:handleEvent` rewrites a mouse-down as
+    `type: (curIcon type:) message: (curIcon message:)`. So which VERB a click carries is just
+    which icon is current -- 4 is USE (with an item), and the others are the look/talk/walk/hand
+    icons a handler's `(switch (param1 message:) ...)` also has arms for."""
+    import re
+    bar = c.gaddr(69)
+    n = c.send(bar, "size")[0] or 0
+    out = []
+    for i in range(n):
+        m = re.search(r"Value returned:\s*([0-9a-f]{4}:[0-9a-f]{4})", c.cmd("send %s at %d"
+                                                                            % (bar, i)), re.I)
+        if not m:
+            continue
+        out.append((i, m.group(1), c.send(m.group(1), "message")[0]))
+    return out
+
+
+def arm_icon(c, message, log=print):
+    """Make the next click carry `message` -- the LOOK/TALK/HAND verbs, not an inventory item.
+
+    ⭐ This is the control that tells "the click never reached this object" apart from "the
+    click reached it and its message-4 arm declined": every one of these handlers also has a
+    `(2 ...)` look arm that simply prints. If a LOOK lands and a USE does not, the routing is
+    fine and the answer is inside case 4."""
+    bar = c.gaddr(69)
+    for i, addr, msg in icons(c):
+        if msg == message:
+            c.cmd("send %s curInvIcon 0" % bar)
+            c.cmd("send %s curIcon %s" % (bar, addr))
+            log("  armed icon %d (%s) message %s" % (i, addr, msg))
+            return addr
+    raise RuntimeError("no icon on the bar carries message %s (have %s)"
+                       % (message, [m for _, _, m in icons(c)]))
+
+
+def offer_script(c, target, item, tag, boxes=None, settle=2500, delay=150, log=print):
     """Hand `item` to `target` with a SCRIPTED CLICK, dismiss whatever it says, and come back at
     a known point in GAME time. Returns (said, virtual_time, aim).
 
@@ -496,10 +612,17 @@ def offer_script(c, target, item, tag, boxes=None, settle=2500, delay=1000, log=
     tell an offer that MISSED apart from a guard that did not fire.
     """
     arm_item(c, item, log=log)
-    # ⛔ Re-read the box for EVERY offer. Half these targets are Actors, and an Actor walks.
+    # ⛔ PARK FIRST, THEN AIM. The park has to happen before the click (a shown icon bar eats it)
+    # -- but a park is a stretch of GAME TIME, and half these targets walk. The tailor's own
+    # `doit` is `(setMotion: Follow global0 40)`: he follows Graham around the shop. Reading his
+    # box and then letting a second of game time pass before clicking aimed at where he WAS, the
+    # click landed on nothing, and the row reported a guard that did not fire. So: park, then
+    # read the box, then click as soon after as the script can be authored.
+    park_mouse(c, log=lambda *a: None)
     box = nsrect(c, target, log=log)
-    cx = (box["nsLeft"] + box["nsRight"]) // 2
-    cy = (box["nsTop"] + box["nsBottom"]) // 2
+    ox, oy = port_origin(c)                             # nsRect -> screen; see port_origin
+    cx = (box["nsLeft"] + box["nsRight"]) // 2 + ox
+    cy = (box["nsTop"] + box["nsBottom"]) // 2 + oy
     c.said()                                            # drop the setup's chatter
     base = len(c.windows())
     if base != idle_windows(c):
@@ -507,11 +630,7 @@ def offer_script(c, target, item, tag, boxes=None, settle=2500, delay=1000, log=
             % (base, idle_windows(c)))
 
     # Authored HERE, not in a file: where to click is a live nsRect.
-    # Step 1 is a PARK, not an approach: it puts the mouse below the icon bar's strip so the
-    # bar's modal loop is not holding the game when the click arrives (see park_mouse). `click`
-    # emits its own move, so nothing is lost by aiming this step elsewhere.
     c.cmd("script clear")
-    c.cmd("script add t=+200 move %d %d" % PARK)
     c.cmd("script add t=+%d click %d %d" % (delay, cx, cy))
     c.cmd("script add t=+%d mark %s_c" % (delay + settle, tag))
     c.cmd("script add t=+%d break" % (delay + settle + 100))

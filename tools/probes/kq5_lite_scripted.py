@@ -45,7 +45,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _kq5 import boot, goto, here, nsrect, offer_script, settle_room, wait_spent
+from _kq5 import (boot, goto, here, nsrect, offer_script, resolve, settle_room,
+                  wait_spent)
 from _sites import items, presence, requirements, sites
 
 SRC = os.environ.get("KQ5_SRC", os.path.join(
@@ -150,13 +151,28 @@ for r in sorted(elsewhere, key=lambda r: (r["word"], r["mask"])):
 
 
 # ---- state the rows need arranged ------------------------------------------------------------
+_REG = __import__("re").compile(r"Value returned:\s*([0-9a-f]{4}:[0-9a-f]{4})",
+                                __import__("re").I)
+
+
+def _owner(c, name):
+    """An item's `owner` as the FULL ssss:oooo the game stores.
+
+    ⛔ NOT `c.send(...)[0]`, which returns the offset alone. An item in Graham's hand is owned by
+    the EGO -- an object address -- and writing back only its offset stores a plain integer where
+    a reg_t belongs. That is a silent corruption of the ownership store, which is precisely what
+    every row here reads and writes."""
+    m = _REG.search(c.cmd("send ?%s owner" % name))
+    return m.group(1) if m else None
+
+
 def owners(c):
     """Every inventory item's owner. Index 0 is the Ok button, not an item."""
     out = {}
     for i, name in sorted(NAMES.items()):
         if i == 0:
             continue
-        v, _ = c.send("?" + name, "owner")
+        v = _owner(c, name)
         if v is not None:
             out[name] = v
     return out
@@ -165,9 +181,8 @@ def owners(c):
 def restore_owners(c, base, log=print):
     moved = []
     for name, want_owner in base.items():
-        v, _ = c.send("?" + name, "owner")
-        if v is not None and v != want_owner:
-            c.cmd("send ?%s owner %d" % (name, want_owner))
+        if _owner(c, name) != want_owner:
+            c.cmd("send ?%s owner %s" % (name, want_owner))
             moved.append(name)
     if moved:
         log("  restored the boot ownership of %s" % ", ".join(moved))
@@ -200,8 +215,8 @@ def apply_reqs(c, ego, reqs, log=print):
                 c.cmd("send %s put %d %s" % (ego, item, owner))
                 c.cmd("send ?%s owner %s" % (name, owner))
             else:
-                cur, _ = c.send("?%s" % name, "owner")
-                if cur is not None and str(cur) == str(owner):
+                cur = _owner(c, name)
+                if cur is not None and int(cur.split(":")[1], 16) == int(owner):
                     c.cmd("send %s get %d" % (ego, item))     # anywhere but there
         elif kind == "counter":
             # `(if (== (++ globalN) K) <the FIRST time> else <the guard>)`. The increment runs
@@ -259,8 +274,21 @@ for r in rows:
             settle_room(c, log=log)
         apply_reqs(c, ego, r["reqs"], log=lambda *a: None)   # again: entering may have moved it
         c.cmd("send %s get %d" % (ego, r["item"]))
-        target = ego if r["target_ego"] else "?" + r["owners"][0]
-        nsrect(c, target, log=log)          # make it exist and be drawn before anything is aimed
+        # ⛔ Try every owner of the bit, not just the first. They are alternative places the
+        # same offer can be made -- room 6 writes $2000 from both `cat` and `catStrip`, and the
+        # cat is only on screen during the chase while catStrip covers the whole picture -- so
+        # "the first owner is not clickable" is not the same as "this guard cannot be reached".
+        target, why = None, []
+        for owner in ([r["owners"][0]] if r["target_ego"] else r["owners"]):
+            try:
+                cand = ego if r["target_ego"] else resolve(c, owner, r["script"], log=log)
+                nsrect(c, cand, log=log)    # make it exist and be drawn before anything is aimed
+                target = cand
+                break
+            except Exception as e:          # noqa: BLE001
+                why.append("%s: %s" % (owner, e))
+        if target is None:
+            raise RuntimeError("; ".join(why))
     except Exception as e:                  # noqa: BLE001
         log("  SKIP: %s" % e)
         for l in c.errors():
