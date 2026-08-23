@@ -58,7 +58,8 @@ ego = c.gaddr(0)
 c.watch_text()
 
 def attempt(tag, boxes):
-    return offer_script(c, ego, "Pie", tag, boxes=boxes, log=lambda *a: None)
+    said, at, _aim = offer_script(c, ego, "Pie", tag, boxes=boxes, log=lambda *a: None)
+    return said, at
 
 def show(name, want_has, want_msg, said, at):
     warn, has = c.gint(WARN_G), c.send(ego, "has", PIE)[0]

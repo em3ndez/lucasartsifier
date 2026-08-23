@@ -305,6 +305,9 @@ def offer_script(c, target, item, tag, boxes=2, settle=3000, gap=2000, delay=800
 
     `tag` must be unique per attempt -- a mark from the previous attempt is still in the buffer
     and would satisfy the wait instantly.
+
+    Returns (said, virtual_time, aim) where `aim` carries the click point and the target's box
+    before and after -- see the comment at the return.
     """
     arm_item(c, item, log=log)
     # ⛔ Re-read the box for EVERY offer. Half these targets are Actors, and an Actor walks.
@@ -328,7 +331,14 @@ def offer_script(c, target, item, tag, boxes=2, settle=3000, gap=2000, delay=800
     # The countdown is only a backstop: `break` is what should bring us back. If it does not,
     # wait_mark says so instead of the probe hanging.
     c.resume(seconds=60, instructions=3000000)
-    return c.said(), c.wait_mark(tag, timeout=5)
+    at = c.wait_mark(tag, timeout=5)
+    # ⭐ Return WHERE IT WAS AIMED and where the target is NOW, so a caller can tell the two ways
+    # an offer looks like nothing happened apart. `offer()` had this as the event's `claimed`
+    # flag; a real click has no such flag, so the box is the next best witness. Without it a
+    # probe that simply MISSED reports a guard that did not fire -- which is what the first
+    # market row did.
+    return c.said(), at, {"aimed": (cx, cy), "box_before": box,
+                          "box_after": nsrect(c, target, tries=1, log=lambda *a: None)}
 
 
 def offer(c, ev, target, item, box=None, aim=None, log=print):
