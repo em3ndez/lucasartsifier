@@ -343,9 +343,33 @@ The events replay identically; the game's responses may not. It is evidence only
 interaction sites are unchanged — which for guard wraps (they wrap in place, they do not move
 objects) is usually true, and is checkable from the emitted source.
 
+### ⛔ Its ORACLE is the wrong kind, and that decides how to use it
+
+The recorder answers **"is this the same as last time?"** — a regression question. Its check is a
+screenshot MD5 against the recording. Record a session in which a guard is broken and the replay
+passes forever, happily, because the recording *is* the specification.
+
+What this project needs is the other kind: **"does this match what the spec says?"** — conformance.
+The expectation comes from the derived guard specs in the emitted patch source
+(`tools/probes/_sites.py` reads them), not from an earlier run of the same thing.
+
+That is not a small difference in emphasis, it decides the architecture:
+
+| | recorder's model | what a lite row needs |
+|---|---|---|
+| expectation | a previous run | the emitted source: bit, item, owner, refusal text |
+| per-row setup | whatever was recorded | different item, mode, warn word, room — **authored** |
+| verdict | screenshot hashes match | `has:` moved, warn bit moved, the right sentence printed |
+
+So "record each row once and replay it" — which is what I suggested last message, and ranked first
+— is the wrong shape. Twenty-five rows are not twenty-five recordings; they are twenty-five
+*parameterisations*, and a replay of any one of them would confirm only that the game still does
+what it did when the tape was made.
+
 ### What is worth taking from it
 
-Two hooks, and they are exactly what the console-driven harness lacks:
+The **transport**, not the oracle. Two hooks, and they are exactly what the console-driven
+harness lacks:
 
 * **`EventRecorder` is a `Common::EventSource`.** During playback its `pollEvent()` *supplies*
   events to the engine, and it `warpMouse`es to match. That is deterministic input injection
@@ -356,6 +380,12 @@ Two hooks, and they are exactly what the console-driven harness lacks:
   be made to expire on demand.
 
 A recording also stores `randomSourceRecords` (RNG seeds), which is the third leg of determinism.
+
+⭐ **So the shape is: keep this project's oracle, borrow the recorder's transport.** Expectations
+derived from the emitted source (built), state set up over the SCI console (built, reliable),
+verdicts from `has:`/warn-bit/`said()` (built) — and the one missing piece, deterministic input
+with a controllable clock, extracted from `pollEvent()` + `processMillis()` rather than driven by
+XTEST. A row becomes a *script* (`t=1200 click 141 124`), authored from the site table, not a tape.
 
 ⚠️ **Practical detail learned the hard way**: record a session that ends by QUITTING the game.
 Playback does not stop when the events run out — it keeps running — so a recording made by killing
