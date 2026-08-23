@@ -1,0 +1,82 @@
+Make the event recorder's game-hash gate optional on playback.
+
+Upstream, a recording stores the MD5 of the game's own files and a mismatch is FATAL:
+
+    if (((_recordMode == kRecorderPlayback) || (_recordMode == kRecorderUpdate)) && !checkGameHash(desc)) {
+        deinit();
+        error("playback:action=error reason=\"\"");
+    }
+
+That is exactly right for what the recorder is FOR -- proving an ENGINE change did not regress a
+KNOWN game, where a different game is a different experiment. We want the mirror image: the
+engine is fixed and the GAME is what changes.
+
+⭐ AS IT TURNS OUT WE DO NOT NEED THIS, and the measurement is worth recording. Our patches are
+installed as LOOSE `*.SCR` patch files alongside untouched `RESOURCE.000/.001/.MAP`, and the
+detection MD5s cover the volumes. So the hash is IDENTICAL across patch builds. Verified by
+replaying one recording against two game dirs whose 0/12/18/203/204/206.SCR all differ: the gate
+did not fire and playback proceeded.
+
+So this patch is insurance for a build that ever rewrites the volumes, not a prerequisite. It is
+opt-in and defaults to upstream behaviour.
+
+    scummvm --record-mode=fast_playback --record-file-name=X --record_ignore_game_hash=true ...
+
+⚠️ It does NOT make a replay meaningful across a script change -- the events replay identically
+and the game's responses may not. Treat a warned replay as evidence only when the interaction
+sites are unchanged.
+
+⚠️ THE STACK ORDER MATTERS. This patch used to carry a COPY of 0002's ImGui build fix, which
+meant 0002 and 0003 could not both be applied -- `git apply` failed on the second one, and
+build_recorder_scummvm.sh papered over it by skipping 0002 whenever EventRecorder.cpp was already
+modified. The duplicate hunks are gone; apply 0002 first and this on top.
+
+FOR LOCAL DEBUGGING ONLY.
+APPLY WITH: (cd tools/scummvm-ref && git apply ../scummvm-patches/0002-*.patch \
+                                  && git apply ../scummvm-patches/0003-*.patch)
+
+diff --git a/base/commandLine.cpp b/base/commandLine.cpp
+index c29d1eb0..af239f8c 100644
+--- a/base/commandLine.cpp
++++ b/base/commandLine.cpp
+@@ -392,6 +392,9 @@ void registerDefaults() {
+ 	ConfMan.registerDefault("disable_display", false);
+ #endif
+ 	ConfMan.registerDefault("record_mode", "none");
++	// LOCAL DEBUGGING PATCH -- see gui/EventRecorder.cpp. Lets a recording be replayed against a
++	// game whose files have changed, which upstream deliberately forbids.
++	ConfMan.registerDefault("record_ignore_game_hash", false);
+ 	ConfMan.registerDefault("record_file_name", "record.bin");
+ 
+ 	ConfMan.registerDefault("gui_saveload_chooser", "grid");
+diff --git a/gui/EventRecorder.cpp b/gui/EventRecorder.cpp
+index f8ec2dd3..9ffe7439 100644
+--- a/gui/EventRecorder.cpp
++++ b/gui/EventRecorder.cpp
+@@ -677,8 +677,24 @@ void EventRecorder::processGameDescription(const ADGameDescription *desc) {
+ 		setGameMd5(desc);
+ 	}
+ 	if (((_recordMode == kRecorderPlayback) || (_recordMode == kRecorderUpdate)) && !checkGameHash(desc)) {
+-		deinit();
+-		error("playback:action=error reason=\"\"");
++		// LOCAL DEBUGGING PATCH: warn instead of abort when the GAME FILES have changed.
++		//
++		// Upstream this check is exactly right: the recorder exists to prove that an ENGINE
++		// change did not regress a KNOWN game, so a different game is a different experiment.
++		// We want the mirror image -- the engine is fixed and the GAME is what changes, because
++		// every patch build rewrites the scripts. The hash gate makes every recording single-use
++		// for that purpose.
++		//
++		// Whether a replay stays MEANINGFUL across a script change is a separate question this
++		// does not answer: the events replay identically, and the game's responses may not.
++		// Treat a warned replay as evidence only when the interaction sites are unchanged.
++		if (ConfMan.getBool("record_ignore_game_hash")) {
++			warning("Event recorder: game files differ from the recording -- continuing anyway "
++			        "(record_ignore_game_hash=true). A desync here is expected, not a bug.");
++		} else {
++			deinit();
++			error("playback:action=error reason=\"\"");
++		}
+ 	}
+ }
+ 

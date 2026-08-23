@@ -1,0 +1,969 @@
+Scripted input and a controllable clock: the event recorder's transport, without its tape.
+
+WHY. Every interaction this harness can drive today goes through XTEST keystrokes into the stock
+binary's graphical console. It works, and it is the only path that completes a guard row, but it
+is flaky over a long run and its timing is wall-clock. The text-console build (patch 0001) fixed
+the typing and gave a deterministic instruction countdown, and then could not finish a single
+interaction: it parks forever at a modal print, in EVERY guard mode, because the game clock does
+not advance while the debugger holds stdin. An A/B against the stock binary settled that the
+build, not the game and not the guards, was at fault.
+
+ScummVM already contains the two mechanisms that fix this, welded to an oracle we cannot use:
+
+  * EventRecorder IS a Common::EventSource. Its pollEvent() supplies events to the engine during
+    playback and warps the cursor to match -- deterministic input through the engine's own
+    pipeline. No X server, no window focus, no dropped keystroke.
+  * processMillis() intercepts getMillis(), returns _fakeTimer, and drives the timer manager
+    itself. The engine's clock becomes ours.
+
+Its oracle is a screenshot MD5 compared against a recorded tape. That answers "is this the same
+as last time" -- a REGRESSION question. Record a session in which a guard is broken and the
+replay passes forever, because the tape IS the spec. This project needs the CONFORMANCE question:
+does the game behave the way the spec derived from the emitted patch source says it must. And the
+KQ5 lite estate is not 25 tapes; it is 25 PARAMETERISATIONS of one shape (item, mode, warn word,
+room), authored from a site table.
+
+So: keep the transport, drop the tape. Three of the four pieces already exist -- expectations
+(tools/probes/_sites.py), state setup (the SCI console), verdicts (`has:`, the warn bit,
+`said()`). This adds the fourth.
+
+WHAT IT ADDS.
+
+    --script-input=FILE        drive the game from a text input script
+    --script-clock-step=NUM    virtual ms per getMillis() query (default 10)
+    --script-seed=NUM          fixed RNG seed, so a run is reproducible
+    --script-trace=NUM         print the virtual clock every NUM ms
+    --script-shared            let real mouse/keyboard through alongside the script
+    --script-realtime          keep delayMillis, so a run plays at watchable speed
+
+and a `script` command in the debugger, which is where the interesting steps are actually
+authored -- WHERE to click is an nsRect read out of the live VM, and half these targets are
+Actors, which walk, so no file written before boot can know it:
+
+    script                     the clock, the step rate, how much is pending
+    script clock <ms>          change the clock rate
+    script trace <ms>          print the clock every <ms> of virtual time (0 = off)
+    script clear               forget everything not yet fired
+    script load <file>         load a file, rebased onto NOW
+    script add t=+500 click 141 124
+
+A script is one step per line; `#` comments; `t=` absolute or `t=+` relative virtual ms:
+
+    clock 10
+    t=1200 click 141 124          move, press, release 100ms later
+    t=+400 rclick 141 124
+    t=+250 key escape             a name from the table, or a single character
+    t=2500 mark offered           prints "[script] t=2500 mark offered" on stdout
+    t=3000 break                  hands control to the SCI console at a known virtual time
+    t=9000 quit                   ends the run -- a script that never quits never terminates
+
+THE CLOCK IS THE POINT. _fakeTimer advances by _clockStep for every getMillis() the engine
+performs, and by nothing else. It is therefore deterministic -- the same script over the same
+game gives the same virtual times whatever the machine is doing -- and it cannot be starved.
+Every game-side wait is a loop that queries the time, so every such loop terminates in a bounded
+number of queries. That is exactly the failure that stopped the text-console build. Audio rides
+along: the recorder's NullMixerManager is pumped from the same place, so a wait-for-speech
+advances with no audio device.
+
+`mark` and `break` are the answer to the other open thread. On the keystroke path the guard
+fires but the warn bit does not read as set, and the refusal text turns up in the NEXT sample's
+window -- the arm completes asynchronously with respect to sampling. A probe now puts a mark a
+known number of VIRTUAL milliseconds after the click and is handed the console back at the very
+next step, so the sample is taken at a stated point in game time rather than after a wall-clock
+sleep.
+
+`--script-trace` exists because two failures look identical from outside and mean opposite
+things: a frozen clock, and a clock that runs while the engine has stopped polling events. Marks
+alone cannot tell them apart -- they print from the event poll -- so the trace prints the clock
+from processMillis instead. It earned its place immediately: it showed the clock stopped dead
+during a hang that had been attributed to time starvation, which is the reverse of the story.
+
+⭐ WHAT THIS FOUND, once it worked. A backtrace taken from INSIDE a guard's message box -- which
+only a `break` step makes possible -- says the box is `Dialog::doit` polling kGetEvent. It waits
+for INPUT, not for time. So the previous session's diagnosis, that the game clock does not
+advance while the debugger holds stdin, was the wrong cause: no clock control ends that box, and
+the arm's remaining statements stay unreached until something dismisses it. Return or a click
+does; space does not. With that, the first guard row ever completed without a person at the
+keyboard: KQ5 LA6, both attempts, state and dialogue.
+
+WHAT IT DELIBERATELY DOES NOT DO. No recording file, no screenshot oracle, no game-hash gate (a
+script is written against the emitted source, and every patch build rewrites the game's scripts).
+Script mode also keeps the REAL save manager, where the recorder swaps in a fake one, because
+whether mode survives save/restore is a question a run has to be able to ask.
+
+FOR LOCAL DEBUGGING ONLY. Apply on top of 0001-0003.
+APPLY WITH: (cd tools/scummvm-ref && git apply ../scummvm-patches/0004-*.patch)
+
+diff --git a/backends/modular-backend.cpp b/backends/modular-backend.cpp
+index 838ea16c..897176e3 100644
+--- a/backends/modular-backend.cpp
++++ b/backends/modular-backend.cpp
+@@ -272,8 +272,11 @@ bool ModularGraphicsBackend::lockMouse(bool visible) {
+ void ModularGraphicsBackend::warpMouse(int x, int y) {
+ #ifdef ENABLE_EVENTRECORDER
+ 	// short circuit for EventRecorder calling warpMouse inside an event poll
++	// (kRecorderScript is the LOCAL scripted-input mode and warps from its poll for the same
++	// reason -- purging the mouse queue mid-poll would drop the click we just delivered)
+ 	if ((g_eventRec.getRecordMode() == GUI::EventRecorder::kRecorderPlayback) ||
+-		(g_eventRec.getRecordMode() == GUI::EventRecorder::kRecorderUpdate)) {
++		(g_eventRec.getRecordMode() == GUI::EventRecorder::kRecorderUpdate) ||
++		(g_eventRec.getRecordMode() == GUI::EventRecorder::kRecorderScript)) {
+ 		_graphicsManager->warpMouse(x, y);
+ 		return;
+ 	}
+diff --git a/base/commandLine.cpp b/base/commandLine.cpp
+index af239f8c..1ee258ff 100644
+--- a/base/commandLine.cpp
++++ b/base/commandLine.cpp
+@@ -218,6 +218,13 @@ static const char HELP_STRING4[] =
+ 	"                           (default: 60000)\n"
+ 	"  --list-records           Display a list of recordings for the target specified\n"
+ 	"  --list-records-json      Display a list of recordings in JSON format for the target specified\n"
++	"  --script-input=FILE      LOCAL: drive the game from a text input script, on a virtual\n"
++	"                           clock (see gui/EventRecorder.cpp)\n"
++	"  --script-clock-step=NUM  LOCAL: virtual milliseconds per getMillis() query (default: 10)\n"
++	"  --script-seed=NUM        LOCAL: fixed RNG seed for a scripted run (default: 0)\n"
++	"  --script-trace=NUM       LOCAL: print the virtual clock every NUM ms (0: off)\n"
++	"  --script-shared          LOCAL: let real mouse/keyboard through alongside the script\n"
++	"  --script-realtime        LOCAL: keep delayMillis, so a scripted run plays at watchable speed\n"
+ #endif
+ 	"\n"
+ #if defined(ENABLE_SKY) || defined(ENABLE_QUEEN)
+@@ -396,6 +403,13 @@ void registerDefaults() {
+ 	// game whose files have changed, which upstream deliberately forbids.
+ 	ConfMan.registerDefault("record_ignore_game_hash", false);
+ 	ConfMan.registerDefault("record_file_name", "record.bin");
++	// LOCAL: scripted input -- see gui/EventRecorder.cpp
++	ConfMan.registerDefault("script_input", "");
++	ConfMan.registerDefault("script_clock_step", 10);
++	ConfMan.registerDefault("script_seed", 0);
++	ConfMan.registerDefault("script_trace", 0);
++	ConfMan.registerDefault("script_shared", false);
++	ConfMan.registerDefault("script_realtime", false);
+ 
+ 	ConfMan.registerDefault("gui_saveload_chooser", "grid");
+ 	ConfMan.registerDefault("gui_saveload_last_pos", "0");
+@@ -841,6 +855,25 @@ Common::String parseCommandLine(Common::StringMap &settings, int argc, const cha
+ 
+ 			DO_LONG_OPTION_INT("screenshot-period")
+ 			END_OPTION
++
++			// LOCAL: scripted input -- see gui/EventRecorder.cpp
++			DO_LONG_OPTION("script-input")
++			END_OPTION
++
++			DO_LONG_OPTION_INT("script-clock-step")
++			END_OPTION
++
++			DO_LONG_OPTION_INT("script-seed")
++			END_OPTION
++
++			DO_LONG_OPTION_INT("script-trace")
++			END_OPTION
++
++			DO_LONG_OPTION_BOOL("script-shared")
++			END_OPTION
++
++			DO_LONG_OPTION_BOOL("script-realtime")
++			END_OPTION
+ #endif
+ 
+ 			DO_LONG_OPTION("opl-driver")
+diff --git a/base/main.cpp b/base/main.cpp
+index ded510cd..8f97956a 100644
+--- a/base/main.cpp
++++ b/base/main.cpp
+@@ -799,7 +799,19 @@ extern "C" int scummvm_main(int argc, const char * const argv[]) {
+ 			Common::String recordMode = ConfMan.get("record_mode");
+ 			Common::String recordFileName = ConfMan.get("record_file_name");
+ 
+-			if (recordMode == "record") {
++			// LOCAL: --script-input turns on scripted input with a virtual clock. It is a mode
++			// of the recorder because it reuses the recorder's two mechanisms -- its EventSource
++			// and its getMillis() hook -- and none of its tape. See gui/EventRecorder.cpp.
++			Common::String scriptInput = ConfMan.get("script_input");
++			if (!scriptInput.empty()) {
++				g_eventRec.setClockStep((uint32)ConfMan.getInt("script_clock_step"));
++				g_eventRec.setScriptSeed((uint32)ConfMan.getInt("script_seed"));
++				g_eventRec.setClockTrace((uint32)ConfMan.getInt("script_trace"));
++				g_eventRec.setScriptExclusive(!ConfMan.getBool("script_shared"));
++				g_eventRec.init(scriptInput, GUI::EventRecorder::kRecorderScript);
++				// Virtual time is decoupled from the wall, so there is nothing to pace to.
++				g_eventRec.setFastPlayback(!ConfMan.getBool("script_realtime"));
++			} else if (recordMode == "record") {
+ 				Common::String targetFileName = ConfMan.hasKey("record_file_name") ? recordFileName : g_eventRec.generateRecordFileName(ConfMan.getActiveDomainName());
+ 				g_eventRec.init(targetFileName, GUI::EventRecorder::kRecorderRecord);
+ 			} else if (recordMode == "update") {
+diff --git a/gui/EventRecorder.cpp b/gui/EventRecorder.cpp
+index 9ffe7439..36cebaad 100644
+--- a/gui/EventRecorder.cpp
++++ b/gui/EventRecorder.cpp
+@@ -42,6 +42,10 @@ DECLARE_SINGLETON(GUI::EventRecorder);
+ #include "graphics/thumbnail.h"
+ #include "graphics/surface.h"
+ #include "graphics/scaler.h"
++#include "common/file.h"
++#include "common/fs.h"
++#include "common/tokenizer.h"
++#include "common/keyboard.h"
+ 
+ #ifdef USE_IMGUI
+ #include "backends/imgui/imgui.h"
+@@ -52,6 +56,11 @@ namespace GUI {
+ 
+ 
+ const int kMaxRecordsNames = 0x64;
++
++// LOCAL: virtual milliseconds the clock gains per getMillis() query, and how long a scripted
++// `click` holds the button down. See the block comment above EventRecorder::processMillis.
++const uint32 kDefaultClockStep = 10;
++const uint32 kDefaultClickHold = 100;
+ const int kDefaultScreenshotPeriod = 60000;
+ 
+ EventRecorder::EventRecorder() {
+@@ -83,6 +92,12 @@ EventRecorder::EventRecorder() {
+ 	_screenshotPeriod = 0;
+ 	_playbackFile = nullptr;
+ 	_recordFile = nullptr;
++	_scriptPos = 0;
++	_clockStep = kDefaultClockStep;
++	_scriptSeed = 0;
++	_clockTrace = 0;
++	_lastClockTrace = 0;
++	_scriptExclusive = true;
+ }
+ 
+ EventRecorder::~EventRecorder() {
+@@ -177,6 +192,330 @@ void EventRecorder::processTimeAndDate(TimeDate &td, bool skipRecord) {
+ 		td = _lastTimeDate;
+ }
+ 
++// ---------------------------------------------------------------------------------------------
++// LOCAL ADDITION: scripted input and a controllable clock.
++//
++// WHAT THIS IS FOR. The event recorder is two useful mechanisms welded to an oracle we cannot
++// use. The mechanisms: pollEvent() feeds events straight into the engine's own pipeline (no X
++// server, no window focus, no dropped keystroke), and processMillis() owns the engine's clock.
++// The oracle: a screenshot MD5 compared against a recorded tape -- which asks "is this the same
++// as last time", a REGRESSION question. This project needs the CONFORMANCE question: does the
++// game behave the way the spec derived from the emitted patch source says it must. A tape cannot
++// answer that, because a tape recorded while a guard was broken passes forever.
++//
++// So: keep the transport, drop the tape. A run is described by a short text script, authored
++// from the site table, and the verdict is read elsewhere (the SCI console: `has:`, a warn bit,
++// the printed sentence).
++//
++// THE CLOCK. _fakeTimer advances by _clockStep for every getMillis() the engine performs, and by
++// nothing else. Two consequences, both wanted:
++//
++//   * Determinism. The same script over the same game produces the same virtual times, whatever
++//     the machine is doing.
++//   * The clock can never be starved. Every game-side wait -- a modal print's timeout, a speech
++//     wait, the engine's own speed throttle -- is a loop that queries the time, so every such
++//     loop terminates in a bounded number of queries. That is the exact failure that made the
++//     text-console build unable to finish an interaction: it parked forever at a print because
++//     the real clock was stopped while the debugger held stdin. Here the clock is driven by the
++//     engine asking, not by the wall, so a blocked debugger cannot freeze it.
++//
++// Audio rides along: the recorder's NullMixerManager is pumped from the same place, so a
++// wait-for-speech advances too, without an audio device.
++//
++// SCRIPT FORMAT -- one step per line, `#` starts a comment.
++//
++//     clock 10                 ms of virtual time per getMillis() query (before the run starts)
++//     t=1200 click 141 124     move, press, release _clickHold ms later
++//     t=+400 rclick 141 124    the same with the right button
++//     t=+0   move 10 20        a bare mouse move
++//     t=+100 down 10 20        press without releasing  (`up` is the other half)
++//     t=+250 key escape        keydown + keyup; a single character is that character
++//     t=2000 clock 1           change the clock rate mid-run
++//     t=2500 mark offered      print "[script] t=2500 mark offered" on stdout
++//     t=3000 break             hand control to the engine's debugger at a known virtual time
++//     t=9000 quit              end the run (a script that never quits never terminates)
++//
++// `t=+N` is relative to the previous step. Steps must be in time order; the parser rejects a
++// script that is not, rather than silently reordering it.
++// ---------------------------------------------------------------------------------------------
++
++static bool parseKeyName(const Common::String &name, Common::KeyState &out) {
++	struct { const char *name; Common::KeyCode code; uint16 ascii; } kNamedKeys[] = {
++		{ "escape",    Common::KEYCODE_ESCAPE,    27   },
++		{ "esc",       Common::KEYCODE_ESCAPE,    27   },
++		{ "return",    Common::KEYCODE_RETURN,    13   },
++		{ "enter",     Common::KEYCODE_RETURN,    13   },
++		{ "space",     Common::KEYCODE_SPACE,     ' '  },
++		{ "tab",       Common::KEYCODE_TAB,       9    },
++		{ "backspace", Common::KEYCODE_BACKSPACE, 8    },
++		{ "up",        Common::KEYCODE_UP,        0    },
++		{ "down",      Common::KEYCODE_DOWN,      0    },
++		{ "left",      Common::KEYCODE_LEFT,      0    },
++		{ "right",     Common::KEYCODE_RIGHT,     0    },
++		{ "f1",        Common::KEYCODE_F1,        0    },
++		{ "f2",        Common::KEYCODE_F2,        0    },
++		{ "f3",        Common::KEYCODE_F3,        0    },
++		{ "f4",        Common::KEYCODE_F4,        0    },
++		{ "f5",        Common::KEYCODE_F5,        0    },
++		{ "f6",        Common::KEYCODE_F6,        0    },
++		{ "f7",        Common::KEYCODE_F7,        0    },
++		{ "f8",        Common::KEYCODE_F8,        0    },
++		{ "f9",        Common::KEYCODE_F9,        0    },
++		{ "f10",       Common::KEYCODE_F10,       0    }
++	};
++
++	Common::String lower(name);
++	lower.toLowercase();
++	for (uint i = 0; i < ARRAYSIZE(kNamedKeys); i++) {
++		if (lower == kNamedKeys[i].name) {
++			out = Common::KeyState(kNamedKeys[i].code, kNamedKeys[i].ascii);
++			return true;
++		}
++	}
++	if (name.size() == 1) {
++		// A single printable character stands for itself. SCI reads the ascii field, so both
++		// have to be right; the keycode of an ASCII letter IS its lowercase code point.
++		char c = name[0];
++		Common::KeyCode code = (Common::KeyCode)(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
++		out = Common::KeyState(code, (uint16)(byte)c);
++		return true;
++	}
++	return false;
++}
++
++// `origin` is where this batch's t=0 sits on the virtual clock -- 0 for a script given on the
++// command line, the clock as it stands for one loaded or added live from the debugger, so the
++// same file means the same thing in both places. `lastTime` threads the previous step's absolute
++// time through, which is what `t=+N` is relative to.
++bool EventRecorder::parseScriptLine(const Common::String &line, int lineNo, uint32 origin, uint32 &lastTime) {
++	Common::String work(line);
++	uint32 hash = work.findFirstOf('#');
++	if (hash != Common::String::npos)
++		work.erase(hash);
++	work.trim();
++	if (work.empty())
++		return true;
++
++	Common::StringTokenizer tok(work, " \t");
++	Common::String first = tok.nextToken();
++
++	uint32 when = lastTime;
++	if (first.hasPrefix("t=")) {
++		Common::String t = Common::String(first.c_str() + 2);
++		if (t.hasPrefix("+"))
++			when = lastTime + (uint32)atoi(t.c_str() + 1);
++		else
++			when = origin + (uint32)atoi(t.c_str());
++		if (when < lastTime) {
++			warning("script line %d: t=%u goes backwards (previous step was at %u)", lineNo, when, lastTime);
++			return false;
++		}
++		first = tok.nextToken();
++	}
++	lastTime = when;
++
++	Common::String verb(first);
++	verb.toLowercase();
++
++	ScriptStep step;
++	step.time = when;
++	step.value = 0;
++
++	// The non-event steps first.
++	if (verb == "clock") {
++		Common::String arg = tok.nextToken();
++		if (arg.empty()) {
++			warning("script line %d: `clock` wants a step in milliseconds", lineNo);
++			return false;
++		}
++		step.kind = ScriptStep::kStepClock;
++		step.value = (uint32)atoi(arg.c_str());
++		if (step.value == 0) {
++			warning("script line %d: a clock step of 0 would stop time", lineNo);
++			return false;
++		}
++		_scriptSteps.push_back(step);
++		return true;
++	}
++	if (verb == "mark") {
++		step.kind = ScriptStep::kStepMark;
++		step.text = tok.nextToken();
++		while (!tok.empty())
++			step.text += " " + tok.nextToken();
++		_scriptSteps.push_back(step);
++		return true;
++	}
++	if (verb == "break") {
++		step.kind = ScriptStep::kStepBreak;
++		_scriptSteps.push_back(step);
++		return true;
++	}
++	if (verb == "quit") {
++		step.kind = ScriptStep::kStepQuit;
++		_scriptSteps.push_back(step);
++		return true;
++	}
++
++	// ...and the ones that turn into engine events.
++	step.kind = ScriptStep::kStepEvent;
++	step.event = Common::Event();
++
++	if (verb == "key") {
++		Common::String arg = tok.nextToken();
++		Common::KeyState ks;
++		if (arg.empty() || !parseKeyName(arg, ks)) {
++			warning("script line %d: `key` wants a character or a known key name, got \"%s\"", lineNo, arg.c_str());
++			return false;
++		}
++		step.event.type = Common::EVENT_KEYDOWN;
++		step.event.kbd = ks;
++		_scriptSteps.push_back(step);
++		step.event.type = Common::EVENT_KEYUP;
++		_scriptSteps.push_back(step);
++		return true;
++	}
++
++	bool isClick  = (verb == "click"  || verb == "rclick");
++	bool isDown   = (verb == "down"   || verb == "rdown");
++	bool isUp     = (verb == "up"     || verb == "rup");
++	bool isMove   = (verb == "move");
++	bool isRight  = verb.hasPrefix("r");
++
++	if (!isClick && !isDown && !isUp && !isMove) {
++		warning("script line %d: unknown step \"%s\"", lineNo, verb.c_str());
++		return false;
++	}
++
++	Common::String xs = tok.nextToken();
++	Common::String ys = tok.nextToken();
++	if (xs.empty() || ys.empty()) {
++		warning("script line %d: `%s` wants an x and a y", lineNo, verb.c_str());
++		return false;
++	}
++	step.event.mouse = Common::Point((int16)atoi(xs.c_str()), (int16)atoi(ys.c_str()));
++
++	// Every pointer step starts by moving there, so the engine's idea of the cursor and the
++	// button event agree even when nothing warped it in between.
++	step.event.type = Common::EVENT_MOUSEMOVE;
++	_scriptSteps.push_back(step);
++	if (isMove)
++		return true;
++
++	if (isClick || isDown) {
++		step.event.type = isRight ? Common::EVENT_RBUTTONDOWN : Common::EVENT_LBUTTONDOWN;
++		_scriptSteps.push_back(step);
++	}
++	if (isClick || isUp) {
++		// A press and a release in the same instant is not a click any engine has to notice:
++		// SCI reads one event per game cycle. Hold the button for a beat of virtual time.
++		Common::String holdArg = tok.nextToken();
++		uint32 hold = holdArg.empty() ? kDefaultClickHold : (uint32)atoi(holdArg.c_str());
++		step.time = when + (isClick ? hold : 0);
++		step.event.type = isRight ? Common::EVENT_RBUTTONUP : Common::EVENT_LBUTTONUP;
++		_scriptSteps.push_back(step);
++		lastTime = step.time;
++	}
++	return true;
++}
++
++void EventRecorder::clearScript() {
++	_scriptSteps.clear();
++	_scriptPos = 0;
++}
++
++bool EventRecorder::addScriptStep(const Common::String &line) {
++	uint32 origin = _fakeTimer;
++	uint32 lastTime = origin;
++	uint32 before = _scriptSteps.size();
++	if (!parseScriptLine(line, 0, origin, lastTime))
++		return false;
++	// ⛔ The queue is consumed strictly in order and a step that is not due yet BLOCKS the ones
++	// behind it. A live add is timed from NOW, so adding to a queue that still holds a step
++	// scheduled later would silently strand the new step behind it. Say so instead.
++	if (before > _scriptPos && _scriptSteps[before].time < _scriptSteps[before - 1].time) {
++		warning("script: `%s` lands at t=%u, behind a step already queued for t=%u -- "
++		        "`script clear` first", line.c_str(), (uint)_scriptSteps[before].time,
++		        (uint)_scriptSteps[before - 1].time);
++		_scriptSteps.resize(before);
++		return false;
++	}
++	if (_scriptSteps.size() > before)
++		debug("[script] added at t=%u (now t=%u, %u pending)",
++		      (uint)_scriptSteps[before].time, (uint)_fakeTimer, (uint)pendingScriptSteps());
++	return true;
++}
++
++bool EventRecorder::loadScript(const Common::String &path, bool replace) {
++	Common::FSNode node((Common::Path(path)));
++	Common::SeekableReadStream *stream = node.createReadStream();
++	if (!stream) {
++		warning("script: cannot read %s", path.c_str());
++		return false;
++	}
++
++	uint32 keptFrom = _scriptSteps.size();
++	if (replace) {
++		clearScript();
++		keptFrom = 0;
++	}
++	uint32 origin = _fakeTimer;
++	uint32 lastTime = origin;
++	int lineNo = 0;
++	bool ok = true;
++	while (!stream->eos()) {
++		Common::String line = stream->readLine();
++		lineNo++;
++		if (stream->err()) {
++			warning("script: read error in %s at line %d", path.c_str(), lineNo);
++			ok = false;
++			break;
++		}
++		if (!parseScriptLine(line, lineNo, origin, lastTime))
++			ok = false;
++	}
++	delete stream;
++
++	if (!ok) {
++		// Refuse the whole script. A run driven by half a script looks like a game bug.
++		_scriptSteps.resize(keptFrom);
++		return false;
++	}
++	debug("[script] loaded %s: %u steps, last at t=%u, clock step %u ms",
++	      path.c_str(), (uint)(_scriptSteps.size() - keptFrom), lastTime, _clockStep);
++	return true;
++}
++
++// LOCAL: the steps that do NOT need the engine to poll events -- a mark, a clock change -- are
++// driven from the clock instead, one call per getMillis(). Only the leading due steps are taken,
++// so a script stays strictly ordered: a due mark BEHIND a due click waits for the click to be
++// delivered.
++//
++// ⭐ This is also the instrument that separates two failures which look identical from outside:
++// a frozen clock, and a clock that runs while the engine has stopped polling events. Marks alone
++// cannot tell them apart -- they only print from the event poll -- and the difference decides
++// what is actually wrong. Hence --script-trace, which prints the clock from here.
++void EventRecorder::drainScriptClockSteps() {
++	while (_scriptPos < _scriptSteps.size()) {
++		const ScriptStep &step = _scriptSteps[_scriptPos];
++		if (step.time > _fakeTimer)
++			break;
++		if (step.kind == ScriptStep::kStepMark) {
++			debug("[script] t=%u mark %s", (uint)_fakeTimer, step.text.c_str());
++		} else if (step.kind == ScriptStep::kStepClock) {
++			debug("[script] t=%u clock %u", (uint)_fakeTimer, (uint)step.value);
++			_clockStep = step.value;
++		} else {
++			break;                      // an event, a break or a quit: the poll has to take it
++		}
++		_scriptPos++;
++	}
++
++	if (_clockTrace && _fakeTimer - _lastClockTrace >= _clockTrace) {
++		_lastClockTrace = _fakeTimer;
++		debug("[script] clock t=%u (%u pending)", (uint)_fakeTimer, (uint)pendingScriptSteps());
++	}
++}
++
+ void EventRecorder::processMillis(uint32 &millis, bool skipRecord) {
+ 	if (!_initialized) {
+ 		return;
+@@ -234,6 +573,18 @@ void EventRecorder::processMillis(uint32 &millis, bool skipRecord) {
+ 			_controlPanel->setReplayedTime(_fakeTimer);
+ 		_processingMillis = false;
+ 		break;
++	case kRecorderScript:
++		// The whole clock, in five lines. Every query moves virtual time forward by a fixed
++		// step, then the subsystems that live on that clock -- the null mixer, the timer
++		// manager -- are pumped exactly as playback pumps them.
++		_processingMillis = true;
++		_fakeTimer += _clockStep;
++		millis = _fakeTimer;
++		drainScriptClockSteps();
++		updateSubsystems();
++		_timerManager->handler();
++		_processingMillis = false;
++		break;
+ 	case kRecorderPlaybackPause:
+ 		millis = _fakeTimer;
+ 		break;
+@@ -295,6 +646,16 @@ void EventRecorder::processScreenUpdate() {
+ 			_controlPanel->setReplayedTime(_fakeTimer);
+ 		_processingMillis = false;
+ 		break;
++	case kRecorderScript:
++		// No screenshots and no clock jump: in script mode the clock belongs to processMillis,
++		// and updateScreen() has already queried it (see ModularGraphicsBackend::updateScreen).
++		if (!_processingMillis) {
++			_processingMillis = true;
++			updateSubsystems();
++			_timerManager->handler();
++			_processingMillis = false;
++		}
++		break;
+ 	default:
+ 		break;
+ 	}
+@@ -306,7 +667,73 @@ void EventRecorder::checkForKeyCode(const Common::Event &event) {
+ 	}
+ }
+ 
++// LOCAL: one step of the input script, if the virtual clock has reached it. The dispatcher
++// calls this in a `while (pollEvent(e))` loop, so at most one engine event comes back per call
++// and the bookkeeping steps -- mark, clock, break -- are performed on the way past.
++bool EventRecorder::pollScriptEvent(Common::Event &ev) {
++	while (_scriptPos < _scriptSteps.size()) {
++		const ScriptStep &step = _scriptSteps[_scriptPos];
++		if (step.time > _fakeTimer)
++			return false;
++		_scriptPos++;
++
++		switch (step.kind) {
++		case ScriptStep::kStepClock:
++			// Normally taken by drainScriptClockSteps() on the next getMillis(); handled here
++			// too so a poll that gets there first does not stall the queue behind it.
++			debug("[script] t=%u clock %u", (uint)_fakeTimer, (uint)step.value);
++			_clockStep = step.value;
++			break;
++
++		case ScriptStep::kStepMark:
++			// The synchronisation primitive. A probe sets state over the console, lets the game
++			// run, and waits for this line before it samples -- which is what an interaction
++			// completing ASYNCHRONOUSLY with respect to sampling costs you otherwise.
++			debug("[script] t=%u mark %s", (uint)_fakeTimer, step.text.c_str());
++			break;
++
++		case ScriptStep::kStepBreak:
++			debug("[script] t=%u break", (uint)_fakeTimer);
++			ev = Common::Event();
++			ev.type = Common::EVENT_DEBUGGER;
++			return true;
++
++		case ScriptStep::kStepQuit:
++			debug("[script] t=%u quit", (uint)_fakeTimer);
++			ev = Common::Event();
++			ev.type = Common::EVENT_QUIT;
++			return true;
++
++		case ScriptStep::kStepEvent:
++			ev = step.event;
++			switch (ev.type) {
++			case Common::EVENT_MOUSEMOVE:
++			case Common::EVENT_LBUTTONDOWN:
++			case Common::EVENT_LBUTTONUP:
++			case Common::EVENT_RBUTTONDOWN:
++			case Common::EVENT_RBUTTONUP:
++				// Same as playback: the backend cursor has to agree with the event, or the
++				// engine draws the pointer somewhere the click did not happen.
++				g_system->warpMouse(ev.mouse.x, ev.mouse.y);
++				break;
++			default:
++				break;
++			}
++			debug("[script] t=%u event type=%d at %d,%d", (uint)_fakeTimer, (int)ev.type,
++			      (int)ev.mouse.x, (int)ev.mouse.y);
++			return true;
++
++		default:
++			break;
++		}
++	}
++	return false;
++}
++
+ bool EventRecorder::pollEvent(Common::Event &ev) {
++	if (_recordMode == kRecorderScript)
++		return _initialized ? pollScriptEvent(ev) : false;
++
+ 	if (((_recordMode != kRecorderPlayback) &&
+ 		(_recordMode != kRecorderUpdate)) ||
+ 		!_initialized)
+@@ -370,6 +797,14 @@ void EventRecorder::RegisterEventSource() {
+ }
+ 
+ uint32 EventRecorder::getRandomSeed(const Common::String &name) {
++	if (_recordMode == kRecorderScript) {
++		// The third leg of determinism, and the cheap one: no tape needed, just a fixed seed
++		// per named source. --script-seed varies it when a row wants a different draw.
++		uint32 h = _scriptSeed * 2654435761u;
++		for (uint i = 0; i < name.size(); i++)
++			h = h * 31u + (byte)name[i];
++		return h;
++	}
+ 	if (_recordMode == kRecorderPlayback) {
+ 		return _playbackFile->getHeader().randomSourceRecords[name];
+ 	}
+@@ -404,6 +839,7 @@ void EventRecorder::init(const Common::String &recordFileName, RecordMode mode)
+ 	_fakeTimer = 0;
+ 	_lastMillis = g_system->getMillis();
+ 	_lastScreenshotTime = 0;
++	_lastClockTrace = 0;
+ 	_recordMode = mode;
+ 	_needcontinueGame = false;
+ 	_fastPlayback = false;
+@@ -418,19 +854,36 @@ void EventRecorder::init(const Common::String &recordFileName, RecordMode mode)
+ 		eventDispatcher->ignoreSources(true);
+ 		eventDispatcher->registerSource(this, false);
+ 	}
++	if (_recordMode == kRecorderScript) {
++		Common::EventDispatcher *eventDispatcher = g_system->getEventManager()->getEventDispatcher();
++		eventDispatcher->clearEvents();
++		// Exclusive by default: the script is the only thing that may move the game, so a stray
++		// mouse crossing the window cannot change a result. --script-shared keeps real input.
++		if (_scriptExclusive)
++			eventDispatcher->ignoreSources(true);
++		eventDispatcher->registerSource(this, false);
++	}
+ 	_screenshotPeriod = ConfMan.getInt("screenshot_period");
+ 	if (_screenshotPeriod == 0) {
+ 		_screenshotPeriod = kDefaultScreenshotPeriod;
+ 	}
+ 	_controlPanel = nullptr;
+-	if (!openRecordFile(recordFileName)) {
++	if (_recordMode == kRecorderScript) {
++		if (!loadScript(recordFileName)) {
++			deinit();
++			error("script:action=error reason=\"input script would not parse\"");
++			return;
++		}
++	} else if (!openRecordFile(recordFileName)) {
+ 		deinit();
+ 		error("playback:action=error reason=\"Record file loading error\"");
+ 		return;
+ 	}
+ 
+ 	if (!isImGuiRecorderEnabled()) {
+-		if (_recordMode != kPassthrough) {
++		// Script mode has no UI at all -- see preDrawOverlayGui, which is why _controlPanel
++		// staying null has to be safe there.
++		if (_recordMode != kPassthrough && _recordMode != kRecorderScript) {
+ 			_controlPanel = new GUI::OnScreenDialog(_recordMode == kRecorderRecord);
+ 			_controlPanel->reflowLayout();
+ 		}
+@@ -673,6 +1126,11 @@ void EventRecorder::setGameMd5(const ADGameDescription *gameDesc) {
+ }
+ 
+ void EventRecorder::processGameDescription(const ADGameDescription *desc) {
++	if (_recordMode == kRecorderScript) {
++		// No hash gate: every patch build rewrites the game's scripts, and a script is written
++		// against the emitted source, not against a particular set of file checksums.
++		return;
++	}
+ 	if ((_recordMode == kRecorderRecord) || (_recordMode == kRecorderUpdate)) {
+ 		setGameMd5(desc);
+ 	}
+@@ -744,7 +1202,10 @@ Common::SeekableReadStream *EventRecorder::processSaveStream(const Common::Strin
+ 
+ Common::SaveFileManager *EventRecorder::getSaveManager(Common::SaveFileManager *realSaveManager) {
+ 	_realSaveManager = realSaveManager;
+-	if (_recordMode != kPassthrough) {
++	// LOCAL: script mode deliberately keeps the REAL save manager. The recorder swaps in a fake
++	// one so a tape carries its own saves; here saves are on disk on purpose -- persistence
++	// across save/restore is one of the things a run has to be able to check.
++	if (_recordMode != kPassthrough && _recordMode != kRecorderScript) {
+ 		return &_fakeSaveManager;
+ 	} else {
+ 		return realSaveManager;
+@@ -755,6 +1216,11 @@ void EventRecorder::preDrawOverlayGui() {
+ 	if (isImGuiRecorderEnabled())
+ 		return;
+ 
++	// LOCAL: script mode never builds the on-screen control panel, and this walks straight
++	// into it.
++	if (!_controlPanel)
++		return;
++
+ 	if ((_initialized) || (_needRedraw)) {
+ 		RecordMode oldMode = _recordMode;
+ 		_recordMode = kPassthrough;
+@@ -775,6 +1241,11 @@ void EventRecorder::postDrawOverlayGui() {
+ 	if (isImGuiRecorderEnabled())
+ 		return;
+ 
++	// LOCAL: script mode never builds the on-screen control panel, and this walks straight
++	// into it.
++	if (!_controlPanel)
++		return;
++
+ 	if ((_initialized) || (_needRedraw)) {
+ 		RecordMode oldMode = _recordMode;
+ 		_recordMode = kPassthrough;
+diff --git a/gui/EventRecorder.h b/gui/EventRecorder.h
+index ed2caa70..830e6820 100644
+--- a/gui/EventRecorder.h
++++ b/gui/EventRecorder.h
+@@ -74,11 +74,60 @@ public:
+ 		kRecorderRecord = 1,		/**< kRecorderRecord, do the recording */
+ 		kRecorderPlayback = 2,		/**< kRecorderPlayback, playback existing recording */
+ 		kRecorderPlaybackPause = 3,	/**< kRecorderPlaybackPause, internal state when user pauses the playback */
+-		kRecorderUpdate = 4			/**< kRecorderUpdate, playback existing recording and update all hashes */
++		kRecorderUpdate = 4,		/**< kRecorderUpdate, playback existing recording and update all hashes */
++		kRecorderScript = 5			/**< kRecorderScript, LOCAL: replay a hand-written input SCRIPT, no file */
++	};
++
++	/**
++	 * LOCAL ADDITION -- scripted input with a controllable clock.
++	 *
++	 * The recorder's two useful halves are its EventSource (deterministic input straight into
++	 * the engine's own pipeline) and its processMillis() hook (the engine's clock becomes ours).
++	 * Its oracle -- a screenshot MD5 against a recorded tape -- is a REGRESSION oracle, and this
++	 * project needs a CONFORMANCE one: does behaviour match the spec derived from the emitted
++	 * patch source. So the transport is reused and the tape is replaced by a text script.
++	 *
++	 * One step of that script. Times are VIRTUAL milliseconds (see _clockStep).
++	 */
++	struct ScriptStep {
++		enum Kind {
++			kStepEvent = 0,		/**< push a Common::Event into the engine */
++			kStepMark = 1,		/**< print a synchronisation line on stdout */
++			kStepClock = 2,		/**< change the clock step */
++			kStepBreak = 3,		/**< hand control back to the engine's debugger */
++			kStepQuit = 4		/**< push EVENT_QUIT so the run terminates by itself */
++		};
++		uint32 time;
++		Kind kind;
++		Common::Event event;
++		Common::String text;
++		uint32 value;
+ 	};
+ 
+ 	void init(const Common::String &recordFileName, RecordMode mode);
+ 	void deinit();
++
++	/** LOCAL: parse an input script. Returns false (and warns) on any unparsable line.
++	 *  Times are rebased onto the CURRENT virtual clock, so the same file works at launch and
++	 *  live from the debugger. */
++	bool loadScript(const Common::String &path, bool replace = true);
++	/** LOCAL: append one step, written exactly as a script line. */
++	bool addScriptStep(const Common::String &line);
++	/** LOCAL: forget every step not yet fired. */
++	void clearScript();
++	/** LOCAL: how many steps are still pending. */
++	uint32 pendingScriptSteps() const { return _scriptPos < _scriptSteps.size() ? _scriptSteps.size() - _scriptPos : 0; }
++	/** LOCAL: print `[script] clock t=N` every `ms` of virtual time (0 = off). */
++	void setClockTrace(uint32 ms) { _clockTrace = ms; }
++	uint32 getClockStep() const { return _clockStep; }
++	/** LOCAL: virtual milliseconds added to the clock per getMillis() query. */
++	void setClockStep(uint32 ms) { _clockStep = ms; }
++	/** LOCAL: let real input sources through alongside the script. */
++	void setScriptExclusive(bool exclusive) { _scriptExclusive = exclusive; }
++	/** LOCAL: fixed RNG seed, so a scripted run is reproducible. */
++	void setScriptSeed(uint32 seed) { _scriptSeed = seed; }
++	/** LOCAL: the virtual clock, in milliseconds. */
++	uint32 getFakeTimer() const { return _fakeTimer; }
+ 	bool processDelayMillis();
+ 	void setFastPlayback(bool fastPlayback);
+ 	uint32 getRandomSeed(const Common::String &name);
+@@ -253,6 +302,19 @@ private:
+ 	Common::PlaybackFile *_playbackFile;
+ 	Common::PlaybackFile *_recordFile;
+ 
++	// LOCAL: scripted input. _scriptSteps is consumed in order; a step fires once the virtual
++	// clock has reached its time, so ordering by time is the parser's job.
++	Common::Array<ScriptStep> _scriptSteps;
++	uint32 _scriptPos;
++	uint32 _clockStep;
++	uint32 _scriptSeed;
++	uint32 _clockTrace;
++	uint32 _lastClockTrace;
++	bool _scriptExclusive;
++	bool parseScriptLine(const Common::String &line, int lineNo, uint32 origin, uint32 &lastTime);
++	bool pollScriptEvent(Common::Event &ev);
++	void drainScriptClockSteps();
++
+ 	void saveScreenShot();
+ 	void checkRecordedMD5();
+ 	void deleteTemporarySave();
+diff --git a/gui/debugger.cpp b/gui/debugger.cpp
+index c4d07e1d..1bfb6eb2 100644
+--- a/gui/debugger.cpp
++++ b/gui/debugger.cpp
+@@ -37,6 +37,9 @@
+ #include "engines/engine.h"
+ 
+ #include "gui/debugger.h"
++#ifdef ENABLE_EVENTRECORDER
++#include "gui/EventRecorder.h"       // LOCAL DEBUGGING PATCH: the `script` command
++#endif
+ #ifndef USE_TEXT_CONSOLE_FOR_DEBUGGER
+ 	#include "gui/console.h"
+ #elif defined(USE_READLINE)
+@@ -87,6 +90,9 @@ Debugger::Debugger() {
+ 	registerCmd("debugflag_list",		WRAP_METHOD(Debugger, cmdDebugFlagsList));
+ 	registerCmd("debugflag_enable",	WRAP_METHOD(Debugger, cmdDebugFlagEnable));
+ 	registerCmd("debugflag_disable",	WRAP_METHOD(Debugger, cmdDebugFlagDisable));
++#ifdef ENABLE_EVENTRECORDER
++	registerCmd("script",			WRAP_METHOD(Debugger, cmdScript));
++#endif
+ }
+ 
+ Debugger::~Debugger() {
+@@ -825,6 +831,54 @@ bool Debugger::cmdDebugFlagsList(int argc, const char **argv) {
+ 	return true;
+ }
+ 
++#ifdef ENABLE_EVENTRECORDER
++// LOCAL DEBUGGING PATCH -- scripted input, driven from the console.
++//
++// The script given on the command line covers everything knowable before boot. It cannot cover
++// a click, because where to click is an nsRect read out of the live VM -- and half these targets
++// are Actors, which WALK, so the box read at the top of a row is already stale by the second
++// attempt. So the interesting steps are authored here, between reading the state and letting the
++// game run.
++//
++//     script                     what the clock is doing and how much is pending
++//     script clock <ms>          virtual ms per getMillis() query
++//     script trace <ms>          print the clock every <ms> of virtual time (0 = off)
++//     script clear               forget everything not yet fired
++//     script load <file>         load a file, rebased onto NOW
++//     script add t=+500 click 141 124
++bool Debugger::cmdScript(int argc, const char **argv) {
++	if (argc < 2) {
++		debugPrintf("virtual clock t=%u, step %u ms/query, %u step(s) pending\n",
++		            (unsigned)g_eventRec.getFakeTimer(), (unsigned)g_eventRec.getClockStep(),
++		            (unsigned)g_eventRec.pendingScriptSteps());
++		debugPrintf("Usage: script [clock <ms> | trace <ms> | clear | load <file> | add <step>]\n");
++		return true;
++	}
++
++	Common::String sub(argv[1]);
++	if (sub == "clock" && argc == 3) {
++		g_eventRec.setClockStep((uint32)atoi(argv[2]));
++		debugPrintf("clock step %s ms/query\n", argv[2]);
++	} else if (sub == "trace" && argc == 3) {
++		g_eventRec.setClockTrace((uint32)atoi(argv[2]));
++		debugPrintf("clock trace every %s ms\n", argv[2]);
++	} else if (sub == "clear") {
++		g_eventRec.clearScript();
++		debugPrintf("script cleared\n");
++	} else if (sub == "load" && argc == 3) {
++		debugPrintf("%s\n", g_eventRec.loadScript(argv[2]) ? "loaded" : "LOAD FAILED");
++	} else if (sub == "add" && argc >= 3) {
++		Common::String step(argv[2]);
++		for (int i = 3; i < argc; i++)
++			step += Common::String(" ") + argv[i];
++		debugPrintf("%s\n", g_eventRec.addScriptStep(step) ? "added" : "STEP REJECTED");
++	} else {
++		debugPrintf("Usage: script [clock <ms> | trace <ms> | clear | load <file> | add <step>]\n");
++	}
++	return true;
++}
++#endif
++
+ bool Debugger::cmdDebugFlagEnable(int argc, const char **argv) {
+ 	if (argc < 2) {
+ 		debugPrintf("debugflag_enable [<flag> | all]\n");
+diff --git a/gui/debugger.h b/gui/debugger.h
+index a8aa2339..4c50e98c 100644
+--- a/gui/debugger.h
++++ b/gui/debugger.h
+@@ -277,6 +277,12 @@ protected:
+ 	bool cmdDebugFlagDisable(int argc, const char **argv);
+ 	bool cmdClearLog(int argc, const char **argv);
+ 	bool cmdExecFile(int argc, const char **argv);
++#ifdef ENABLE_EVENTRECORDER
++	// LOCAL DEBUGGING PATCH -- see tools/scummvm-patches/0004-*.patch. Lets a probe author the
++	// input script AFTER reading the state it depends on: the coordinates of a guard's target
++	// are a live nsRect, not something a file written before boot could know.
++	bool cmdScript(int argc, const char **argv);
++#endif
+ 
+ #ifndef USE_TEXT_CONSOLE_FOR_DEBUGGER
+ private:

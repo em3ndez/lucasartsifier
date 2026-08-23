@@ -1,0 +1,7 @@
+# The do-nothing input script. Its whole job is to turn script mode ON: --script-input is what
+# registers the EventSource and hands the engine's clock to us, and a probe that authors its
+# steps live over the console (`script add ...`) still needs a file to name.
+#
+# The horizon exists because playback does not stop when the steps run out -- without a `quit`
+# the run has no end of its own. Ten virtual minutes is far past any row.
+t=600000 quit
