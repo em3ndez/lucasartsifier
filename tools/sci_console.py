@@ -129,7 +129,8 @@ class Console:
     _PROMPT = "debug> "
 
     def __init__(self, game, game_id, title=None, ini=None, log=None, display_name=":0",
-                 binary=None):
+                 binary=None, input_script=None, clock_step=None, seed=None,
+                 clock_trace=None, script_shared=False, script_realtime=False):
         self.game, self.id = os.path.abspath(game), game_id
         self.title = title or game_id
         # `--binary <a text-console build>` switches the whole command path from XTEST keystrokes
@@ -140,9 +141,22 @@ class Console:
                                        "sci_console.ini")
         self.log_path = log or os.path.join("/tmp", "sci_console_%d.log" % os.getpid())
         self.display_name = display_name
+        # ⭐ SCRIPT MODE (a build carrying scummvm-patches/0004). The game is driven by a text
+        # input script through ScummVM's own event pipeline, on a VIRTUAL clock that advances
+        # only when the engine asks the time. That is the transport XTEST could never be: no
+        # window focus, no dropped keystroke, and -- the part that matters -- no wait the
+        # debugger can freeze, because the clock is driven by the engine running, not by the
+        # wall. See tools/scummvm-patches/0004-*.patch.
+        self.input_script = os.path.abspath(input_script) if input_script else None
+        self.clock_step = clock_step
+        self.seed = seed
+        self.clock_trace = clock_trace
+        self.script_shared = script_shared
+        self.script_realtime = script_realtime
         self.proc = self.d = self.win = None
         self._fh = None
         self._said_buf = ""
+        self._script_buf = ""
         self.transcript = []
 
     # ---- lifecycle ---------------------------------------------------------------
@@ -159,6 +173,20 @@ class Console:
         # an option -- it is how the session begins, at a prompt, before the game has run at all.
         if attach_at_start or self.stdin_mode:
             argv.append("--debugflags=OnStartup")
+        if self.input_script:
+            argv.append("--script-input=" + self.input_script)
+            if self.clock_step is not None:
+                argv.append("--script-clock-step=%d" % self.clock_step)
+            if self.seed is not None:
+                argv.append("--script-seed=%d" % self.seed)
+            if self.clock_trace is not None:
+                argv.append("--script-trace=%d" % self.clock_trace)
+            # ⛔ BARE FLAGS. DO_OPTION_BOOL matches `--x` / `--no-x` and jumps to unknownOption
+            # on anything after the name, so `--script-shared=true` is REJECTED, not parsed.
+            if self.script_shared:
+                argv.append("--script-shared")
+            if self.script_realtime:
+                argv.append("--script-realtime")
         argv.append(self.id)
         self._fh = open(self.log_path, "wb")
         # Its OWN process group, so teardown can kill the whole thing even if ScummVM has
@@ -296,6 +324,7 @@ class Console:
         chunk = self._reader.read()
         if chunk:
             self._said_buf += chunk
+            self._script_buf += chunk
         return chunk
 
     def shot(self, path):
@@ -533,6 +562,51 @@ class Console:
         # global<n>" far from the cause.
         self.open()
 
+    # ---- the input script ---------------------------------------------------------
+    # Steps announce themselves on stdout, so the driver can tell WHEN the game was touched
+    # rather than guessing. `mark` exists for exactly one problem: on the keystroke path a
+    # guard's arm completes ASYNCHRONOUSLY with respect to sampling -- the refusal text turned up
+    # in the NEXT attempt's window and the warn bit read as unset -- so a probe was grading a
+    # state the game had not reached yet. A mark placed a known number of VIRTUAL milliseconds
+    # after the click turns "wait a bit and hope" into a delimiter.
+    # ⛔ NOT anchored at the start of a line. ScummVM's stdout interleaves the debugger prompt
+    # with everything else, so a mark printed just after a prompt arrives as
+    # `debug> [script] t=16330 mark s2000` -- and an anchored pattern silently misses exactly the
+    # marks that follow a resume, which is all the interesting ones. That read as "the mark never
+    # came" for a mark that is right there in the log.
+    _MARK = re.compile(r"\[script\] t=(\d+) mark ([^\r\n]*)")
+    _VTIME = re.compile(r"\[script\] t=(\d+) ")
+
+    def marks(self):
+        """Every mark the script has printed so far, as (virtual_ms, name). Not consumed."""
+        self._read_new()
+        return [(int(t), n.strip()) for t, n in self._MARK.findall(self._script_buf)]
+
+    def vtime(self):
+        """The virtual clock as of the last script line printed, or None if it has printed none.
+
+        ⛔ This is a LOWER BOUND, not a reading. The clock advances inside the engine; nothing
+        publishes it except a script step going past. Use a `mark` when you need to know."""
+        found = self._VTIME.findall(self._script_buf)
+        return int(found[-1]) if found else None
+
+    def wait_mark(self, name, timeout=120, poll=0.05):
+        """Block until the script prints `mark <name>`; return its virtual time.
+
+        The game has to be RUNNING for the clock to move, so this belongs inside a `resume`, not
+        after one."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            for t, n in self.marks():
+                if n == name:
+                    return t
+            if self.proc is not None and self.proc.poll() is not None:
+                raise RuntimeError("ScummVM exited before mark %r:\n%s"
+                                   % (name, "\n".join(self.errors())))
+            time.sleep(poll)
+        raise RuntimeError("mark %r did not arrive within %ss (marks so far: %s)"
+                           % (name, timeout, self.marks()))
+
     # ---- typed reads -------------------------------------------------------------
     _REG = re.compile(r"([0-9a-f]{4}):([0-9a-f]{4})", re.I)
 
@@ -602,6 +676,19 @@ def main(argv=None):
                     help="a ScummVM built with --enable-text-console. Switches the command path "
                          "from XTEST keystrokes to a pipe (see tools/build_text_scummvm.sh). "
                          "Also read from SCI_CONSOLE_BINARY.")
+    ap.add_argument("--input-script", default=None,
+                    help="a text input script, driven through ScummVM's own event pipeline on a "
+                         "virtual clock. Needs a build carrying scummvm-patches/0004.")
+    ap.add_argument("--clock-step", type=int, default=None,
+                    help="virtual milliseconds per getMillis() query (build default: 10)")
+    ap.add_argument("--seed", type=int, default=None, help="fixed RNG seed for a scripted run")
+    ap.add_argument("--clock-trace", type=int, default=None,
+                    help="print the virtual clock every N ms. Tells a FROZEN clock apart from an "
+                         "engine that has stopped polling events -- marks cannot.")
+    ap.add_argument("--script-shared", action="store_true",
+                    help="let real mouse/keyboard through alongside the input script")
+    ap.add_argument("--script-realtime", action="store_true",
+                    help="keep delayMillis, so a scripted run plays at watchable speed")
     ap.add_argument("--attach", action="store_true",
                     help="--debugflags=OnStartup. NOTE: the console attaches before the event loop "
                          "exists, so it prints its banner but accepts NO input. Kept for "
@@ -617,8 +704,11 @@ def main(argv=None):
             except (ProcessLookupError, PermissionError):
                 pass
         time.sleep(1)
-    c = Console(a.game, a.id, a.title, a.ini, a.log,
-                binary=a.binary).start(attach_at_start=a.attach)
+    c = Console(a.game, a.id, a.title, a.ini, a.log, binary=a.binary,
+                input_script=a.input_script, clock_step=a.clock_step, seed=a.seed,
+                clock_trace=a.clock_trace,
+                script_shared=a.script_shared,
+                script_realtime=a.script_realtime).start(attach_at_start=a.attach)
     sys.stderr.write("transport: %s\n" % ("pipe (stdin)" if c.stdin_mode else "XTEST keystrokes"))
     try:
         ns = {"c": c, "time": time, "__file__": os.path.abspath(a.script),
