@@ -361,30 +361,46 @@ stdin instead of blocking, pumping events and letting time pass between polls �
 while the debugger is *not* at a prompt, so the patch never runs — `send <obj> handleEvent <ev>`
 on a speaking handler still hangs. Only the click path benefits.
 
-⚠️ **And the click path is still not finished.** Where it stands after a long push:
+⚠️ **And the click path is still not finished.** After reading the engine source and a long
+series of controlled runs, here is exactly what is known:
 
-* The icon-bar setup was rewritten to replicate `Inventory::showSelf`'s tail exactly (`enable:`
-  the bar's own `useIconItem`, copy the item's cursor onto it, then set `curIcon`/`curInvIcon`)
-  rather than poking `icon4` by name. That removed one whole failure and is the right way to do
-  it regardless.
-* With the patch, **the print completes**: a backtrace taken afterwards shows an ordinary game
-  loop (`KQ5::play → doit → Game::doit → User::doit`), not a stack parked in `PrintScript`.
-* The guarded arm **runs**: flag 16 is set and the eat text appears, which are its first two
-  statements.
-* But the guard, three statements later **in the same arm with no branch in between**, does not
-  execute — the warn bit stays clear and the item stays held.
+**The arm runs, and then stops at the print.** In the emitted source the eat arm is four
+statements with no branch between them:
 
-Those last two are in tension, and the tension is the lead. If the arm ran and the handler
-returned, the guard cannot have been skipped by ordinary control flow. The remaining explanation
-is that the print **aborts script processing** (SCI unwinds for some transitions), so the rest of
-the arm is discarded and the VM returns to the main loop — which is exactly what the evidence
-looks like. That is checkable: watch `s->abortScriptProcessing` across the call, or breakpoint the
-guard's own address and see whether it is ever reached.
+```
+(2  (proc0_9 16)          ; flag 16  -- OBSERVED: set
+    (proc0_29 141)        ; the text -- OBSERVED: printed
+    (if <allow> ... (global0 put: 2 1))   ; <- never runs
+    (param1 claimed: 1)
+    (if (not <allow>) ... (|= global403 $0001)))   ; <- never runs
+```
 
-⚠️ Also still intermittent: `IconBar::dispatchEvent: Send to invalid selector claimed of object at
-<the item>`. `IconBar::doit` only ever passes its own `ibEvent`, so an inventory item arriving
-there is not explained yet either. Removing the probe's extra "dismiss" clicks did not fix it, so
-it is not stray input.
+⭐ **This is not a guard problem at all.** Running the same click in **Off** mode, where `<allow>`
+is true and the arm should simply eat the pie, leaves the pie *still held*. Nothing after the
+print executes, in any mode. The guard was never the variable.
+
+And it is not ordinary control flow: a backtrace taken afterwards shows a normal game loop
+(`KQ5::play → doit → Game::doit → User::doit`), so the handler's frame is *gone*. Something
+abandons it inside the print.
+
+Ruled out by experiment, so nobody repeats them:
+
+| tried | result |
+|---|---|
+| `--enable-readline` | its event hook only runs at the readline prompt, never inside `cmdSend` |
+| muting speech / un-muting speech | no change |
+| extra clicks to dismiss the print | no change (and they were suspected of the IconBar fault; removing them did not fix that either) |
+| waiting at the prompt so real time passes | no change |
+| ONE long uninterrupted burst, so the debugger never breaks mid-print | no change |
+| removing the event **drain** from the patch (it was eating the game's input — a real bug, now fixed) | no change |
+| hand-set `curIcon`/`curInvIcon` vs. replicating `Inventory::showSelf` exactly | fixed one crash, did not fix this |
+
+**The one test still unrun** — and the one worth running first — is the same click path on the
+**stock** binary. That separates "the click path is wrong" from "the text-console build is wrong",
+which is the only fork left. It could not be run here because the stock build's Ctrl+Alt+D refused
+to open on several consecutive attempts, and `boot()` needs the console before it can set anything
+up. Giving the stock path a console-free way in (or retrying the hotkey until it takes) makes that
+a ten-minute answer.
 
 **Bottom line: no guard row has completed over the pipe.** The four verified rows remain the ones
 driven on the stock binary with XTEST.

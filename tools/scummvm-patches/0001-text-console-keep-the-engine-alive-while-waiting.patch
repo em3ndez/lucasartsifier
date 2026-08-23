@@ -21,9 +21,11 @@ every burst the debugger sits in `fgets` with the clock stopped, so the speech n
 finishes and the guard's refusal (emitted AFTER the print) is never reached. Muting
 speech does not help; nor does un-muting it.
 
-So: poll stdin instead of blocking on it, and between polls pump events and let time
-pass. This is what `readline_eventFunction` already does for the readline build, except
-that hook only runs while readline is waiting AT THE PROMPT.
+So: poll stdin instead of blocking on it, and let time pass between polls.
+
+⛔ Do NOT drain the event queue here. A first cut did `while (pollEvent(event)) {}`, copying
+`readline_eventFunction`, and that eats the GAME's input -- anything the engine is waiting
+on never sees it. Letting time pass is the whole job; the events belong to the game.
 
 FOR LOCAL DEBUGGING ONLY -- never shipped, never sent upstream from here.
 
@@ -40,7 +42,7 @@ so `send <obj> handleEvent <ev>` on a speaking handler still hangs. The click pa
 the one this unblocks.
 
 diff --git a/gui/debugger.cpp b/gui/debugger.cpp
-index b37c84ad..075a7937 100644
+index b37c84ad..c4d07e1d 100644
 --- a/gui/debugger.cpp
 +++ b/gui/debugger.cpp
 @@ -43,6 +43,12 @@
@@ -56,7 +58,7 @@ index b37c84ad..075a7937 100644
  #endif
  
  
-@@ -279,6 +285,27 @@ void Debugger::enter() {
+@@ -279,6 +285,28 @@ void Debugger::enter() {
  	do {
  		printf("debug> ");
  		::fflush(stdout);
@@ -74,10 +76,11 @@ index b37c84ad..075a7937 100644
 +			struct timeval tv = {0, 0};
 +			if (select(STDIN_FILENO + 1, &fds, nullptr, nullptr, &tv) > 0)
 +				break;                          // a line is waiting
-+			Common::Event event;
-+			while (g_system->getEventManager()->pollEvent(event)) {
-+				// drop them: the game is paused at a prompt, but time must still pass
-+			}
++			// ⛔ DO NOT DRAIN THE EVENT QUEUE HERE. An earlier cut did
++			// `while (pollEvent(event)) {}` and it ate the game's input: anything the engine was
++			// waiting on -- a dialog wanting a click to dismiss -- never saw it, so the script
++			// behind it stayed abandoned. Letting time pass is the whole job; the events belong
++			// to the game.
 +			g_system->delayMillis(10);
 +		}
 +

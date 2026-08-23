@@ -518,8 +518,14 @@ class Console:
             self._await_prompt(timeout=max(30, seconds * 4 + 30), dismiss=False)
             return
         self.type("go\n")
+        if during is not None:
+            time.sleep(at)
+            try:
+                during()
+            except Exception:                        # noqa: BLE001
+                pass
         if seconds:
-            time.sleep(seconds)
+            time.sleep(max(0.0, seconds - (at if during is not None else 0.0)))
 
     # ---- typed reads -------------------------------------------------------------
     _REG = re.compile(r"([0-9a-f]{4}):([0-9a-f]{4})", re.I)
