@@ -395,12 +395,23 @@ Ruled out by experiment, so nobody repeats them:
 | removing the event **drain** from the patch (it was eating the game's input — a real bug, now fixed) | no change |
 | hand-set `curIcon`/`curInvIcon` vs. replicating `Inventory::showSelf` exactly | fixed one crash, did not fix this |
 
-**The one test still unrun** — and the one worth running first — is the same click path on the
-**stock** binary. That separates "the click path is wrong" from "the text-console build is wrong",
-which is the only fork left. It could not be run here because the stock build's Ctrl+Alt+D refused
-to open on several consecutive attempts, and `boot()` needs the console before it can set anything
-up. Giving the stock path a console-free way in (or retrying the hotkey until it takes) makes that
-a ten-minute answer.
+⭐ **The user settled the fork by playing it: with guards Off, Graham eats the pie.** So the game
+is fine, the build is fine, and the fault is in the driving. That also retires "boot properly
+instead of teleporting" — the probe now plays the intro for real (rooms 99 → 119 → 1) and the
+result is unchanged.
+
+⛔ **A conclusion drawn here was wrong, and the control caught it.** `bpx put` never fired, which
+looked like proof that the disposal is never called. Then `bpx doit` — on a method that runs every
+single cycle — did not fire either. **Breakpoints do not work in this setup at all**, so the first
+result said nothing. Any future use of `bpx`/`sg` here needs its control run first; `sg` is also
+too slow to be usable, since it makes the VM run `scriptDebug()` per instruction.
+
+⭐ **What that failure hints at, and the best remaining lead**: in both breakpoint runs the game
+was let go with a bare `exit` and NO countdown, and produced *total silence* for 45–90 seconds —
+no output, no reaction to a click. That is consistent with the VM not actually resuming after a
+bare `exit`. If true it would explain everything at once, because every "the arm stopped" reading
+was taken after handing control back this way. **Check that first**: `exit`, then watch whether
+anything at all moves (a global that ticks, a `kStrCpy` line) without a countdown armed.
 
 **Bottom line: no guard row has completed over the pipe.** The four verified rows remain the ones
 driven on the stock binary with XTEST.

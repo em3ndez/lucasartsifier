@@ -17,7 +17,7 @@ FIRST_ROOM = 2              # past the title/intro rooms means we are playing
 FIRST_PLAYABLE = 1          # KQ5 opens outside Graham's house; rm001.sc is a real room
 
 
-def boot(c, rounds=12, log=print):
+def boot(c, rounds=12, log=print, teleport=False):
     """Get to a playable room. Returns the room we landed in.
 
     Over the PIPE there is nothing to click: the session starts at a debugger prompt before the
@@ -28,11 +28,23 @@ def boot(c, rounds=12, log=print):
     """
     import time
     if c.stdin_mode:
+        if not teleport:
+            # PLAY the intro rather than jumping over it: alternate short bursts with clicks on
+            # the two decision points. Teleporting lands in a room whose state was never built by
+            # the intro, and that difference is not always visible until much later.
+            for i in range(rounds):
+                c.resume(2.5, during=lambda: [c.click(*PLAYED_YES), c.click(*SKIP_IT)], at=0.8)
+                r = c.room()
+                log("  intro round %d: room %s" % (i, r))
+                if r == FIRST_PLAYABLE:
+                    c.resume(3)
+                    return r
+            log("  intro did not settle; falling back to a teleport")
         c.resume(2)                                # let script 0 come up
         c.cmd("room %d" % FIRST_PLAYABLE)
         c.resume(3)
         room = c.room()
-        log("  booted (pipe) to room %s" % room)
+        log("  booted (pipe, teleport) to room %s" % room)
         return room
 
     time.sleep(8)                                  # the Sierra logo takes no input at all
