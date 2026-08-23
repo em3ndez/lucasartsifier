@@ -255,6 +255,82 @@ def offer_click(c, target, item, seconds=6.0, log=print):
     return c.said(), (cx, cy)
 
 
+def arm_item(c, item, log=print):
+    """Put `item` on the cursor as the USE action, the way Inventory:showSelf leaves it.
+
+    ⛔ Replicate the tail of `Inventory::showSelf`, do not poke curIcon/curInvIcon by hand:
+
+        (if (not (global69 curInvIcon:)) (global69 enable: (global69 useIconItem:)))
+        (global69 curIcon: ((global69 useIconItem:) cursor: (curIcon cursor:) yourself:)
+                  curInvIcon: curIcon)
+
+    The icon that belongs in curIcon is the bar's OWN `useIconItem`, not `icon4` looked up by
+    name; the difference does not show until execution gets far enough to matter, as
+    `IconBar::dispatchEvent: Send to invalid selector claimed of object at <the item>`.
+    """
+    bar = c.gaddr(69)
+    use_icon = _ret(c.send(bar, "useIconItem")[1])
+    if use_icon is None:
+        raise RuntimeError("icon bar has no useIconItem")
+    cursor = _ret(c.send("?" + item, "cursor")[1])
+    if not c.send(bar, "curInvIcon")[0]:
+        c.cmd("send %s enable %s" % (bar, use_icon))
+    if cursor:
+        c.cmd("send %s cursor %s" % (use_icon, cursor))
+    c.cmd("send %s curIcon %s" % (bar, use_icon))
+    c.cmd("send %s curInvIcon ?%s" % (bar, item))
+    return use_icon
+
+
+def offer_script(c, target, item, tag, boxes=2, settle=3000, gap=2000, delay=800, log=print):
+    """Hand `item` to `target` with a SCRIPTED CLICK, drain the message boxes, come back at a
+    known point in GAME time. Returns (said, virtual_time).
+
+    This is the shape every guard row wants. Needs a build carrying
+    tools/scummvm-patches/0004 and a session started with --input-script.
+
+    ⛔ `boxes` IS PART OF THE TEST, not a timeout to pad. A guard's message box is
+    `Dialog::doit` polling kGetEvent -- it waits for INPUT, not for time, so no clock control
+    ends it and everything after it in the arm is unreached until it goes. Box 1 is the action's
+    own message and always plays; a second box plays whenever the guard has something to say.
+    Get the count wrong in either direction and the row lies:
+
+      too FEW  -- the arm stays parked and its effects land in the NEXT attempt's window, which
+                  reads exactly like a guard that did not fire
+      too MANY -- the extra Return starts a FRESH offer, because the item is still on the
+                  cursor, which reads like a guard that fired twice
+
+    Both were observed before the count was made explicit. Dismiss with RETURN: a dismissing
+    CLICK would also be an offer wherever it lands, and SPACE does not dismiss at all.
+
+    `tag` must be unique per attempt -- a mark from the previous attempt is still in the buffer
+    and would satisfy the wait instantly.
+    """
+    arm_item(c, item, log=log)
+    # ⛔ Re-read the box for EVERY offer. Half these targets are Actors, and an Actor walks.
+    box = nsrect(c, target, log=log)
+    cx = (box["nsLeft"] + box["nsRight"]) // 2
+    cy = (box["nsTop"] + box["nsBottom"]) // 2
+    c.said()                                            # drop the setup's chatter
+
+    # Authored HERE, not in a file: where to click is a live nsRect.
+    c.cmd("script clear")
+    c.cmd("script add t=+200 move %d %d" % (cx, cy + 30))
+    c.cmd("script add t=+%d click %d %d" % (delay, cx, cy))
+    t = delay
+    for _ in range(boxes):
+        t += gap
+        c.cmd("script add t=+%d key return" % t)
+    c.cmd("script add t=+%d mark %s" % (t + settle, tag))
+    c.cmd("script add t=+%d break" % (t + settle + 100))
+    log("  click (%d,%d) on %s, %d box(es) to dismiss, sample at t=+%dms"
+        % (cx, cy, target, boxes, t + settle))
+    # The countdown is only a backstop: `break` is what should bring us back. If it does not,
+    # wait_mark says so instead of the probe hanging.
+    c.resume(seconds=60, instructions=3000000)
+    return c.said(), c.wait_mark(tag, timeout=5)
+
+
 def offer(c, ev, target, item, box=None, aim=None, log=print):
     """Hand `item` to `target` the way a click does.
 
