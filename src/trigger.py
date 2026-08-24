@@ -219,6 +219,46 @@ def body_claim(body):
     return _always_claims(text, 0, len(text), noncode_spans(text))
 
 
+# The warned bit an ALREADY-GUARDED body carries. `(|= global<w> $<mask>)` is the mark line
+# `_ModeSite.forms` emits, and it is the only place one appears.
+_INNER_MARK = re.compile(r"\(\|= global(\d+) (\$[0-9a-fA-F]{4})\)")
+
+
+def inherited_forms(body):
+    """`(allow, warn, mark)` reusing the bit a guarded `body` already owns, or None.
+
+    ⭐ ONE ACTION, ONE WARNED BIT -- however many guards were placed on it. Lite's contract is
+    that a guard refuses ONCE and then lets the player through, and nested guards broke it: each
+    owned its own bit, so clearing the OUTER bit let the player past the outer WHILE ITS
+    CONDITION WAS STILL FALSE, which then exposed the inner, whose bit was still unset. N stacked
+    guards cost N refusals, and the middle click printed a warning and a refusal at once
+    [USER, play-tested 2026-08-23, KQ5's hermit: "it refuses twice. the second time it says you
+    have been warned AND not yet, then the third time it goes through"].
+
+    So a wrap around an already-guarded body reuses that body's bit, and emits **no warned line
+    of its own** -- the INNERMOST guard keeps it, so the message lands when the action finally
+    happens rather than one click early. Every stacking order gives exactly one refusal and
+    exactly one warning:
+
+      * outer refuses first (its condition false, bit unset) -> one "Not yet!", bit set;
+        the next click clears BOTH levels at once, and the innermost speaks.
+      * outer's condition TRUE and the inner refuses -> the inner both refuses and, next click,
+        warns. The outer contributes nothing either way.
+
+    ⛔ PLACEMENT IS NOT TOUCHED [USER: "I think there was a good reason"]. This is the Lite
+    presentation layer only: Full's allow test can never be true and Stock's is always true, so
+    neither mode ever reads the bit and neither changes by one byte."""
+    if MODE is None:
+        return None
+    m = _INNER_MARK.search(body)
+    if not m:
+        return None
+    g, w, mask = MODE["g"], int(m.group(1)), m.group(2)
+    return ("(or (== global%d 2) (and (== global%d 1) (& global%d %s)))" % (g, g, w, mask),
+            None,                                   # the innermost guard is what speaks
+            "(|= global%d %s)" % (w, mask))
+
+
 def guarded_wrap(guard_sexpr, body, refuse, site=None, deny_extra=(),
                  indent="\t\t\t", marker="; softlock-guard"):
     """The refusal-bearing wrap, in one place for every kind that says no.
@@ -250,7 +290,8 @@ def guarded_wrap(guard_sexpr, body, refuse, site=None, deny_extra=(),
     body = body.strip()
     # The refusal ends the click exactly where the body would have -- `body_claim`.
     claim = body_claim(body)
-    forms = site.forms() if site is not None else None
+    # A wrap around an already-guarded body SHARES that body's warned bit -- `inherited_forms`.
+    forms = inherited_forms(body) or (site.forms() if site is not None else None)
     if forms is None:
         return (f"(if {guard_sexpr}\n{b}{body}\n{indent}else\n"
                 + "".join(f"{b}{ln}\n" for ln in deny_extra)
@@ -260,8 +301,8 @@ def guarded_wrap(guard_sexpr, body, refuse, site=None, deny_extra=(),
     allow, warn, mark = forms
     return (f"(if {guard_sexpr}\n{b}{body}\n{indent}else\n"
             f"{b}(if {allow}\n"
-            f"{b}\t{warn}\n"
-            f"{b}\t{body}\n"
+            + (f"{b}\t{warn}\n" if warn else "")
+            + f"{b}\t{body}\n"
             f"{b}else\n"
             + "".join(f"{b}\t{ln}\n" for ln in deny_extra)
             + f"{b}\t{refuse}\n"
