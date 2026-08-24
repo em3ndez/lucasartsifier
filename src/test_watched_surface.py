@@ -1,4 +1,8 @@
-"""WATCHED SURFACES: KQ6 and LB2's full output, frozen so a change is REPORTED, not silent.
+"""WATCHED SURFACES: LB2's full output, frozen so a change is REPORTED, not silent.
+
+⭐ KQ6 LEFT THIS TIER 2026-08-24 -- promoted to `test_golden` [user ruling, repeated across
+sessions and executed after the v35 play-checks]. Its surface moved out VERBATIM; nothing was
+re-derived. LB2 stays here while it is under active work.
 
 This is deliberately NOT `test_golden`, and the difference is the point.
 
@@ -11,7 +15,7 @@ This is deliberately NOT `test_golden`, and the difference is the point.
                          [user ruling 2026-08-06: "not like as a golden omg don't touch, but
                          any regression should be loudly and immediately reported and checked"]
 
-Until now the only thing standing between KQ6 and a silent surface change was a human
+Until this file existed, the only thing standing between a WIP game and a silent surface change was a human
 remembering to run `snapshot.py` against a worktree baseline before committing. That worked
 because someone kept doing it by hand; it is not a net. Every detector verdict, every guard
 spec (all four site kinds), every placement row and its site count is frozen here, so the
@@ -50,7 +54,7 @@ DATA = os.path.join(_HERE, "testdata", "watched_surfaces.json")
 # A game belongs here while its output is expected to improve, and graduates to `test_golden`
 # when the user says its behaviour is validated. Do not move one back without asking.
 # `dagger` is LB2 (Laura Bow 2); the identifier is what `config.by_name` and the build dir use.
-WATCHED = ("KQ6", "dagger")
+WATCHED = ("dagger",)
 LABEL = {"dagger": "LB2"}
 
 

@@ -1,4 +1,5 @@
-"""Golden-snapshot lock on the FULL analysis output surface for the VALIDATED games: LSL2 and KQ4.
+"""Golden-snapshot lock on the FULL analysis output surface for the VALIDATED games: LSL2, KQ4
+and KQ6.
 
 The v1.0-lsl2 tag's behaviour on LSL2 is a CORRECT ORACLE -- 16 softlocks, four dangerous sinks,
 its guard specs -- validated by playing the patched game to the ending. This test freezes that whole
@@ -14,6 +15,13 @@ re-bless is not a reference. Its golden was lifted VERBATIM out of `watched_surf
 surface that tier had been holding green -- so the move froze exactly what was already blessed and
 re-derived nothing. (This docstring previously said KQ4 was "still under active development"; that
 stopped being true on 2026-07-25 and the file was never updated.)
+
+⭐ KQ6 JOINED 2026-08-24 [user ruling: "kq6 should be golden, as i've said a number of times",
+then "goldenify it!" after play-confirming the v35 install (Charon rm660, the rm340 turn-back,
+the rm550 walk-back)]. Same lift as KQ4: its surface moved VERBATIM out of
+`watched_surfaces.json` -- the surface the watched tier had been holding green -- so the move
+froze exactly what was already blessed and re-derived nothing. KQ6 leaves the watched tier with
+this commit; LB2 (dagger) remains there.
 
 ⛔ AND THIS FILE NEVER SKIPS [user, 2026-08-09]. One check per golden game, emitted on every run.
 A missing IR, a missing golden or an unmounted resource drive is a FAILURE, not a `(skip …)` line:
@@ -72,8 +80,8 @@ def _diff(golden, got):
 
 
 def run():
-    print("=== test_golden: the full analysis surface is frozen (LSL2, KQ4) ===")
-    for name, cfg in (("LSL2", config.LSL2), ("KQ4", config.KQ4)):
+    print("=== test_golden: the full analysis surface is frozen (LSL2, KQ4, KQ6) ===")
+    for name, cfg in (("LSL2", config.LSL2), ("KQ4", config.KQ4), ("KQ6", config.KQ6)):
         path = os.path.join(_HERE, "testdata", f"{name.lower()}.golden.json")
         # ⛔ THIS FILE NEVER SKIPS [user ruling, 2026-08-09: "test_golden shouldn't skip anything
         # ever"]. Exactly ONE check is emitted per golden game, on every run, whatever the state of
