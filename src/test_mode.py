@@ -203,6 +203,60 @@ def test_deny_claims_the_event():
           all(_balanced(x) for x in (c, w, inner, outer)))
 
 
+def test_nested_wraps_share_one_warned_bit():
+    """ONE ACTION, ONE WARNED BIT -- however many guards were placed on it.
+
+    [USER, play-tested 2026-08-23, KQ5 rm046: *"the hermit is buggy. it refuses twice. the
+    second time it says you have been warned AND not yet, then the third time it goes through"*]
+
+    Lite's contract is that a guard refuses ONCE and then lets you through. Nested guards broke
+    it: each owns its own bit, and clearing the OUTER bit lets the player past the outer while
+    its condition is still FALSE -- which then exposes the inner, whose bit is still unset. So N
+    stacked guards cost N refusals, and the middle click prints a warning and a refusal at once.
+    KQ5 stacks them at rm046 (2 bits on the Shell) and boatRegion (3 bits on `leave`, whose
+    three conditions are BYTE-IDENTICAL).
+
+    The fix is at the Lite layer, not at placement [USER: *"I think there was a good reason"*]:
+    a wrap around an already-guarded body REUSES that body's bit and emits no warned line of its
+    own, so the innermost is what speaks when the action finally happens. Full and Stock never
+    consult the bit, so neither is touched."""
+    print("\n-- guarded_wrap: nested wraps share ONE warned bit --")
+    _fake_mode()
+    body = "(gRoom setScript: giveShell)\n(param1 claimed: 1)"
+    refuse = "(proc255_0 {Not yet!})"
+    WARN = "You have been warned!"
+
+    inner = T.guarded_wrap("(gEgo has: 30)", body, refuse, site=T._ModeSite())
+    outer = T.guarded_wrap("(gEgo has: 31)", inner, refuse, site=T._ModeSite())
+
+    masks = set(re.findall(r"\|= global(\d+) (\$\w+)", outer))
+    check("a wrap around a guarded body allocates NO second warned bit",
+          len(masks) == 1)
+    check("...and it is the inner guard's own bit",
+          masks == set(re.findall(r"\|= global(\d+) (\$\w+)", inner)))
+    check("the outer's allow test reads that same bit",
+          outer.count("(& global482 $0001)") >= 1 and "$0002" not in outer)
+    # the body is duplicated once per wrap, so the inner's warn appears twice; the outer must
+    # contribute none of its own.
+    check("only the innermost guard speaks the warned line",
+          outer.count(WARN) == inner.count(WARN) * 2)
+    check("one refusal per action: the outer still refuses, the inner is not reached",
+          outer.count(refuse) == inner.count(refuse) * 2 + 1)
+    check("nested wrap stays balanced", _balanced(outer))
+
+    # three deep -- boatRegion's shape -- still one bit
+    third = T.guarded_wrap("(gEgo has: 9)", outer, refuse, site=T._ModeSite())
+    check("three stacked guards still share ONE bit",
+          len(set(re.findall(r"\|= global(\d+) (\$\w+)", third))) == 1)
+    check("three deep stays balanced", _balanced(third))
+
+    # ...and an UNNESTED wrap is untouched: it still allocates and still warns
+    plain = T.guarded_wrap("(gEgo has: 5)", body, refuse, site=T._ModeSite())
+    check("a lone guard still allocates its own bit and speaks",
+          len(set(re.findall(r"\|= global(\d+) (\$\w+)", plain))) == 1
+          and plain.count(WARN) == 1)
+
+
 def test_ui_installers():
     print("\n-- UI installers on the real game files --")
     scratch = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build",
@@ -639,6 +693,7 @@ def test_review_defects():
 def run():
     test_wrapper_shapes()
     test_deny_claims_the_event()
+    test_nested_wraps_share_one_warned_bit()
     test_review_defects()
     test_ui_installers()
     test_mode_stays_out_of_the_surface()

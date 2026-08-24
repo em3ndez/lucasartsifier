@@ -84,6 +84,27 @@ KNOWN_RED = {
     # KQ5 gains 34 `(param1 claimed: 1)` lines in 10 files and loses nothing. The four checks
     # that must NOT gain a claim stayed green throughout and are the limit the cure may not
     # overrun.
+    # ⛔ OPEN DEFECT, declared 2026-08-23, cure known. NESTED GUARDS EACH OWN A WARNED BIT, so
+    # Lite's two-step becomes an N+1-step. [USER, play-tested, KQ5 rm046: "the hermit is buggy.
+    # it refuses twice. the second time it says you have been warned AND not yet, then the third
+    # time it goes through"] Clearing the OUTER bit lets the player past the outer while its
+    # condition is still FALSE, which exposes the inner, whose bit is still unset.
+    # KQ5 stacks at rm046 (2 bits on the Shell) and boatRegion (3 bits on `leave`, three
+    # BYTE-IDENTICAL conditions). Cure: a wrap around an already-guarded body reuses that body's
+    # bit and emits no warned line of its own -- at the LITE layer, not at placement
+    # [USER: "I think there was a good reason"]. Full and Stock never read the bit.
+    "test_mode.py": {
+        "a wrap around a guarded body allocates NO second warned bit":
+            "each nested wrap allocates its own bit, so Lite refuses once per guard",
+        "...and it is the inner guard's own bit":
+            "same defect -- pins WHICH bit survives, so a cure cannot pass by allocating a third",
+        "the outer's allow test reads that same bit":
+            "the outer still tests a bit of its own",
+        "only the innermost guard speaks the warned line":
+            "every level warns, so the middle click prints warning AND refusal",
+        "three stacked guards still share ONE bit":
+            "boatRegion's three-deep shape, the same defect one level further",
+    },
     "test_toll.py": {
         # ✅ PROMOTED 2026-08-16 -- "KQ5 temple strands Brass_Bottle + Gold_Coin" and "KQ5 toll
         # item is the Staff via rm214->rm18" are GREEN and no longer listed. Both demanded that
