@@ -38,6 +38,7 @@ apply "0001-text-console-keep-the-engine-alive-while-waiting.patch" gui/debugger
 apply "0002-eventrecorder-builds-without-imgui.patch"                gui/EventRecorder.h
 apply "0003-optional-game-hash-gate-on-playback.patch"               base/commandLine.cpp
 apply "0004-scripted-input-and-a-controllable-clock.patch"           base/main.cpp
+apply "0005-node-walk-workaround-table-and-kq5-eachelementdo.patch" engines/sci/engine/workarounds.cpp
 
 # SDL2 headers without root: the runtime lib is installed, only the dev package is missing, and
 # it unpacks into a prefix. Its `libSDL2.so` symlink points at a file only the RUNTIME package
