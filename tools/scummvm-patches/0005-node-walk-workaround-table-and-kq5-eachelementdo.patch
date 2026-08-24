@@ -23,8 +23,13 @@ games -- kIsObject_workarounds carries GK1 demo, Island of Dr Brain and QFG3.
 The entry pins script 999 (the List class) and KQ5, but NOT an object name: `nullptr` matches
 any (workarounds.cpp:1096), because the list differs per room.
 
-⚠️ This makes the HARNESS tolerate a game script bug; it does not establish whether the state is
-reachable in normal play, where a player on stock ScummVM would see the same error.
+✅ HARNESS-ONLY, and that is settled. [USER, play-tested, 2026-08-23: "I could not reproduce the
+crash. I think it's a test harness artefact"]. The shipped KQ5 patch is clear and owes nothing
+here; a player never reaches this. The remaining suspect is the harness's own reach into a room
+-- `goto force=True` teleports, direct ownership writes, the forced re-entry bounce -- which can
+leave a room's lists half-built in a way normal play does not.
+
+Note the crash fires on the FIRST click (the refusal), not on any second offer.
 diff --git a/engines/sci/engine/kernel_tables.h b/engines/sci/engine/kernel_tables.h
 index 32d131bf..53e69f74 100644
 --- a/engines/sci/engine/kernel_tables.h
