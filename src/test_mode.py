@@ -257,6 +257,31 @@ def test_nested_wraps_share_one_warned_bit():
           and plain.count(WARN) == 1)
 
 
+def test_conditional_claim_carries_to_the_deny():
+    """A body that claims CONDITIONALLY should hand the deny path the SAME conditional claim.
+
+    [USER, play-found 2026-08-24, KQ5 rm32 mid-cliff: click the sled on the slope while standing
+    half off the edge -- Lite says "Not yet" AND "You have been warned" from ONE click and then
+    nothing happens; Full doubles the refusal.] Two handlers (`area`, the room's click-on-ego
+    path) share the sled case and the bit; the deny-claim cure skipped this body because its
+    stock claim sits under `(not local40)`, so the refusal leaves the event unclaimed and it
+    walks to the sibling -- the toymaker's mechanism at the one site the cure could not cover.
+
+    The honest form: the deny may consume the event exactly when the stock proceed-path would
+    have -- `(if (not local40) (param1 claimed: 1))` -- never more, never less."""
+    print("\n-- guarded_wrap: a conditional claim carries to the deny conditionally --")
+    _fake_mode()
+    refuse = "(proc255_0 {Not yet!})"
+    body = "(if (not local40)\n\t(param1 claimed: 1)\n\t(gEgo setScript: useSled)\n)"
+    w = T.guarded_wrap("(gEgo has: 2)", body, refuse, site=T._ModeSite())
+    deny = w[w.rindex(refuse):]
+    check("the deny path repeats the body's claim UNDER ITS OWN CONDITION",
+          "(if (not local40)" in deny and "claimed: 1" in deny)
+    check("...and never claims unconditionally there",
+          "claimed:" not in deny or "(if (not local40)" in deny)
+    check("conditional-claim wrap stays balanced", _balanced(w))
+
+
 def test_ui_installers():
     print("\n-- UI installers on the real game files --")
     scratch = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build",
@@ -694,6 +719,7 @@ def run():
     test_wrapper_shapes()
     test_deny_claims_the_event()
     test_nested_wraps_share_one_warned_bit()
+    test_conditional_claim_carries_to_the_deny()
     test_review_defects()
     test_ui_installers()
     test_mode_stays_out_of_the_surface()

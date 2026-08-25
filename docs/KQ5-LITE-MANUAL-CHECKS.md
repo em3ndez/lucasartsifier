@@ -18,8 +18,8 @@ on the SECOND. A warning and a refusal on the SAME trigger is the stacked-bit bu
 
 | # | bit | where | do (twice) | ⚠️ |
 |---|-----|-------|------------|----|
-| LD1 | 403 $8000 | rm18, Brass Bottle (6) + Gold Coin (11) left on the floor | walk the exit strip | leaves without them on the 2nd |
-| LS1-edge | 404 $0001 | rm32, missing any of Pie/Harp/Beeswax/Hammer/Lamb | **walk east** (the click half already passed in the suite) | ⭐ the bit is SHARED with the sled click: a refusal taken on the click must make the WALK warn, not re-refuse. ONE-WAY, save first |
+| ✅ LD1 (USER 2026-08-24) | 403 $8000 | rm18, Brass Bottle (6) + Gold Coin (11) left on the floor | walk the exit strip | leaves without them on the 2nd |
+| ⚠️ LS1-edge (USER 2026-08-24: works, but see the declared red — mid-cliff sled click double-fires: refuse+warn from one click, then noop; stock silently refuses there) | 404 $0001 | rm32, missing any of Pie/Harp/Beeswax/Hammer/Lamb | **walk east** (the click half already passed in the suite) | ⭐ the bit is SHARED with the sled click: a refusal taken on the click must make the WALK warn, not re-refuse. ONE-WAY, save first |
 | LR2 | 404 $0002 | rm40, missing Crystal (21) or Lamb (19) in hand | walk the top strip (~148,144) | ONE-WAY, save first |
 | LH2c | 404 $0004 | coast rm44/45/46 with flag 105 SET, items missing | click the boat / the sail | ONE bit now (was 3); check ONE refusal then through |
 | LH0 | 404 $0008 | harpy island rm49 first visit, missing Shell (23) or Fishhook (31) | click the boat / walk the sea edge | island is ONE SAFE VISIT |
