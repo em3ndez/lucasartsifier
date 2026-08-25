@@ -89,17 +89,21 @@ KNOWN_RED = {
     # emits NO warned line of its own, so the innermost speaks when the action finally happens.
     # One action, one refusal, one warning, however many guards were placed on it. Placement is
     # untouched [USER: "I think there was a good reason"]; Full and Stock never read the bit.
-    # ⛔ OPEN DEFECT, declared 2026-08-24, cure known, USER-ranked low priority. A body whose
-    # stock claim is CONDITIONAL (rm32's sled: `(if (not local40) (claim) (slide))`) leaves its
-    # refusal claim-less, so at a multi-handler site one click still reaches BOTH same-bit
-    # siblings: Lite prints refusal AND warning from one click (then noops -- local40 is set in
-    # the mid-cliff state), Full doubles the refusal. [USER play-found, rm32 half off the edge.]
-    # Cure: the deny repeats the body's claim UNDER THE BODY'S OWN CONDITION -- consuming the
-    # event exactly when stock's proceed-path would have. Emission change: measure + goldens +
-    # the 0.SCR save-size check when built.
+    # ⛔ OPEN DEFECT, declared 2026-08-24, USER promoted to fix-now. rm32's sled case is a
+    # SINGLE ONE-ARMED IF (`(if (not local40) (claim)(slide))`) and the wrap took the whole if,
+    # so the guard speaks where stock is silent, unclaimed, and one click reaches both same-bit
+    # handlers (the room + `area`): Lite = refusal AND warning then noop, Full = doubled refusal.
+    # ⛔ The first red here prescribed a CONDITIONAL deny-claim; RE-DERIVED AND KILLED -- the
+    # observed state is local40=1, where that claim declines. The cure is placement-shaped:
+    # hoist the body's own condition, wrap only the arm; the arm's claim is then unconditional
+    # and the shipped body_claim consumes the event on the deny.
     "test_mode.py": {
-        "the deny path repeats the body's claim UNDER ITS OWN CONDITION":
-            "a conditionally-claiming body still leaves its refusal claim-less",
+        "the guard sits INSIDE the one-armed if (condition hoisted)":
+            "the wrap takes the whole one-armed if, so the guard speaks where stock is silent",
+        "...so the condition is tested BEFORE the guard, not inside its body":
+            "same defect, ordering pinned",
+        "and the deny path claims -- the arm's claim is unconditional now":
+            "unclaimed refusal walks to the sibling handler",
     },
     "test_toll.py": {
         # ✅ PROMOTED 2026-08-16 -- "KQ5 temple strands Brass_Bottle + Gold_Coin" and "KQ5 toll

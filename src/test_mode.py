@@ -257,29 +257,61 @@ def test_nested_wraps_share_one_warned_bit():
           and plain.count(WARN) == 1)
 
 
-def test_conditional_claim_carries_to_the_deny():
-    """A body that claims CONDITIONALLY should hand the deny path the SAME conditional claim.
+def test_one_armed_case_hoists_its_condition():
+    """A case that is a SINGLE ONE-ARMED IF gets the guard INSIDE the arm, not around the if.
 
-    [USER, play-found 2026-08-24, KQ5 rm32 mid-cliff: click the sled on the slope while standing
-    half off the edge -- Lite says "Not yet" AND "You have been warned" from ONE click and then
-    nothing happens; Full doubles the refusal.] Two handlers (`area`, the room's click-on-ego
-    path) share the sled case and the bit; the deny-claim cure skipped this body because its
-    stock claim sits under `(not local40)`, so the refusal leaves the event unclaimed and it
-    walks to the sibling -- the toymaker's mechanism at the one site the cure could not cover.
+    [USER, play-found 2026-08-24, KQ5 rm32 mid-cliff.] The sled case's whole body is
+    `(if (not local40) (claim) (slide))` -- stock is SILENT when local40 is set, and both the
+    room and the `area` feature carry the case on one warned bit. Wrapping the WHOLE if made the
+    guard speak where stock says nothing, unclaimed, so one click reached both handlers: Lite
+    printed refusal AND warning then nooped, Full doubled the refusal.
 
-    The honest form: the deny may consume the event exactly when the stock proceed-path would
-    have -- `(if (not local40) (param1 claimed: 1))` -- never more, never less."""
-    print("\n-- guarded_wrap: a conditional claim carries to the deny conditionally --")
+    ⛔ The first declared red here prescribed a CONDITIONAL deny-claim -- re-derivation killed
+    it: the observed state is local40=1, exactly where a claim conditioned on (not local40)
+    declines to claim. The cure is PLACEMENT-shaped instead: hoist the body's own condition,
+    wrap only the arm. Then the failing-condition state is byte-for-byte stock silence, and in
+    the guarded state the arm's claim is unconditional so the deny consumes the event
+    (`body_claim`, already shipped). Engaged ONLY when the if is the case's sole statement --
+    trailing statements would out-run the refusal."""
+    print("\n-- wrap_forbidden_case: a sole one-armed if hoists its condition --")
     _fake_mode()
-    refuse = "(proc255_0 {Not yet!})"
-    body = "(if (not local40)\n\t(param1 claimed: 1)\n\t(gEgo setScript: useSled)\n)"
-    w = T.guarded_wrap("(gEgo has: 2)", body, refuse, site=T._ModeSite())
-    deny = w[w.rindex(refuse):]
-    check("the deny path repeats the body's claim UNDER ITS OWN CONDITION",
-          "(if (not local40)" in deny and "claimed: 1" in deny)
-    check("...and never claims unconditionally there",
-          "claimed:" not in deny or "(if (not local40)" in deny)
-    check("conditional-claim wrap stays balanced", _balanced(w))
+    CASE = ("(method (handleEvent param1)\n"
+            "\t(switch (param1 message:)\n"
+            "\t\t(4\n"
+            "\t\t\t(switch (global9 indexOf: (global69 curInvIcon:))\n"
+            "\t\t\t\t(29\n"
+            "\t\t\t\t\t(if (not local40)\n"
+            "\t\t\t\t\t\t(param1 claimed: 1)\n"
+            "\t\t\t\t\t\t(gEgo setScript: useSled)\n"
+            "\t\t\t\t\t)\n"
+            "\t\t\t\t)\n"
+            "\t\t\t)\n"
+            "\t\t)\n"
+            "\t)\n"
+            ")\n")
+    out, n = T.wrap_forbidden_case(CASE, r"setScript:\s*useSled", 29,
+                                   "(gEgo has: 2)", "(proc255_0 {Not yet!})")
+    check("the wrap landed", n == 1, out)
+    # index() raises on a red run; the checks must FAIL red, not crash the file
+    cond_at = out.find("(if (not local40)")
+    guard_at = out.find("(if (gEgo has: 2)")
+    # ⛔ no `detail` on declared-red checks -- the runner keys on the whole line
+    check("the guard sits INSIDE the one-armed if (condition hoisted)",
+          0 <= cond_at < guard_at and "softlock-guard" in out[cond_at:])
+    check("...so the condition is tested BEFORE the guard, not inside its body",
+          0 <= cond_at < guard_at)
+    deny = out[out.rindex("(proc255_0 {Not yet!})"):]
+    check("and the deny path claims -- the arm's claim is unconditional now",
+          "(param1 claimed: 1)" in deny)
+    check("hoisted wrap stays balanced", _balanced(out))
+
+    # the guard must NOT engage the hoist when the if is not the case's only statement
+    TRAILING = CASE.replace("\t\t\t\t\t)\n\t\t\t\t)\n",
+                            "\t\t\t\t\t)\n\t\t\t\t\t(param1 claimed: 1)\n\t\t\t\t)\n")
+    out2, n2 = T.wrap_forbidden_case(TRAILING, r"setScript:\s*useSled", 29,
+                                     "(gEgo has: 2)", "(proc255_0 {Not yet!})")
+    check("a case with a TRAILING statement keeps the whole-case wrap (siblings must not outrun)",
+          n2 == 1 and 0 <= out2.find("(if (gEgo has: 2)") < out2.find("(if (not local40)"), out2)
 
 
 def test_ui_installers():
@@ -719,7 +751,7 @@ def run():
     test_wrapper_shapes()
     test_deny_claims_the_event()
     test_nested_wraps_share_one_warned_bit()
-    test_conditional_claim_carries_to_the_deny()
+    test_one_armed_case_hoists_its_condition()
     test_review_defects()
     test_ui_installers()
     test_mode_stays_out_of_the_surface()
