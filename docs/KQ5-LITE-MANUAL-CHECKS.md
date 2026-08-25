@@ -1,8 +1,7 @@
 # KQ5 Lite — what automation cannot drive (v20 bits, 2026-08-24)
 
 ✅ **CHECKLIST COMPLETE 2026-08-24.** 6 of 7 play-verified by the USER; LH2c ruled not reachable
-in real play (see its row). One residual defect declared red from LS1-edge (the mid-cliff
-double-dispatch, `tools/run_tests.py` KNOWN_RED).
+in real play (see its row). The LS1-edge mid-cliff double-dispatch was FIXED (v21, the one-armed hoist) and USER play-verified 2026-08-24: stock-identical silence.
 
 The scripted suite (`tools/probes/kq5_lite_scripted.py`) drives all 21 INVENTORY-OFFER sites:
 14/16 rows PASS on v20 and the two non-passes (rm006 lamb, rm046 hermit) are cutscene-staging
