@@ -944,6 +944,44 @@ def arming_contexts(text, target_script, ego=None):
     return out
 
 
+def _sole_one_armed_arm(text, bs, be, pos):
+    """The then-arm span when the body `[bs, be)` is a SINGLE ONE-ARMED `(if ...)` holding `pos`.
+
+    ⭐ HOIST THE BODY'S OWN CONDITION, WRAP ONLY THE ARM [USER, play-found 2026-08-24, KQ5 rm32
+    mid-cliff]. The sled case's whole body is `(if (not local40) (claim)(slide))` -- stock is
+    SILENT when the condition fails, and the room and the `area` feature carry the case on ONE
+    warned bit. Wrapping the whole if made the guard speak where stock says nothing, and since
+    that body's claim is conditional the deny could not consume the event (`body_claim`) -- one
+    click walked on to the second handler: Lite printed refusal AND warning then nooped, Full
+    doubled the refusal. Held at the ARM instead, the failing-condition state is byte-for-byte
+    stock, and the arm's claim is unconditional so the refusal ends the click.
+
+    ⛔ ONLY when the if is the body's SOLE statement -- a trailing statement would sit OUTSIDE
+    the wrap and run ahead of the refusal, the exact shape the whole-clause hold exists to
+    prevent. And only ONE-ARMED: a two-armed if is `wrap_forbidden_case`'s half-lamb machinery.
+
+    ⛔ The first cure derived for this defect -- a CONDITIONAL deny-claim -- was killed by
+    re-derivation before it shipped: the observed state is `local40=1`, precisely where a claim
+    conditioned on `(not local40)` declines to claim. One helper, used by every applier that
+    holds a clause: the setscript branch, `wrap_all_armings_in_source` and
+    `wrap_forbidden_case` ([[same-rule-two-places]])."""
+    stmts = body_forms(text, bs, be)
+    if len(stmts) != 1:
+        return None
+    s0, s1 = stmts[0]
+    if text[s0] != "(" or head_of(text, s0) != "if":
+        return None
+    if depth1_else(text, s0, s1) is not None:
+        return None
+    k = s0 + 3
+    while k < s1 and text[k] in " \t\n":
+        k += 1
+    _cs, ce = _block_span(text, k)                 # the condition form
+    if not (ce <= pos < s1):
+        return None                                # the anchor must sit in the ARM
+    return (ce, s1 - 1)
+
+
 def wrap_all_armings_in_source(text, placement, guard_sexpr, refuse, site=None):
     """Wrap EVERY `setScript: <target>` clause in the placement's method -- the multi-site twin
     of `wrap_trigger_in_source`'s setscript branch. KQ6's rock-stepping arms `takeStep` from FOUR
@@ -989,6 +1027,7 @@ def wrap_all_armings_in_source(text, placement, guard_sexpr, refuse, site=None):
             return text, 0                 # unholdable arming -> refuse the WHOLE site
         # the hold is the whole cond-clause where there is one, taken from the STATEMENT's start
         b = _enclosing_clause_body(region, b[0]) or b
+        b = _sole_one_armed_arm(region, b[0], b[1], ssm.start()) or b
         if b not in spans:
             spans.append(b)
     if not spans:
@@ -1770,6 +1809,7 @@ def wrap_trigger_in_source(text, placement, guard_sexpr, refuse="(NotNow)", site
             # cannot fire before the refusal (the changeState case's care) -- but the clause is
             # taken from the STATEMENT's start, not a raw paren walk's.
             b = _enclosing_clause_body(region, b[0]) or b
+            b = _sole_one_armed_arm(region, b[0], b[1], ssm.start()) or b
             if b not in spans:
                 spans.append(b)
         if not spans:
@@ -2165,19 +2205,27 @@ def wrap_forbidden_case(text, anchor_pat, token, guard_sexpr, refuse, site=None)
             if arms:
                 ts, te, es, ee = (span[0] + x for x in arms)
                 arm = (ts, te) if ts <= m.start() < te else (es, ee)
-        by_case.setdefault(span, []).append((m.start(), arm))
+        cb = _clause_body(text, span[0], span[1])
+        hoist = _sole_one_armed_arm(text, cb[0], cb[1], m.start()) if cb else None
+        by_case.setdefault(span, []).append((m.start(), arm, hoist))
     spans, arm_wraps = [], []
     for span, hits in by_case.items():
         # the narrowing engages ONLY when some arm re-gets the token (the half-lamb shape);
         # a case whose fork never re-gets keeps the whole-case wrap byte-identically (the
         # cat's and dog's race-check `if local0` would otherwise churn shipped emissions).
-        keeps = [a for (_p, a) in hits
+        keeps = [a for (_p, a, _h) in hits
                  if a is not None and get_pat.search(text[a[0]:a[1]])]
         if keeps:
-            for (_p, a) in hits:
+            for (_p, a, _h) in hits:
                 if a is not None and not get_pat.search(text[a[0]:a[1]]) \
                         and a not in arm_wraps:
                     arm_wraps.append(a)
+        elif all(h is not None for (_p, _a, h) in hits):
+            # the sole-one-armed-if hoist (see _sole_one_armed_arm): every anchor in this case
+            # sits in the arm of its single conditional -- hold the ARM, leave the test outside
+            for (_p, _a, h) in hits:
+                if h not in arm_wraps:
+                    arm_wraps.append(h)
         elif span not in spans:
             spans.append(span)
     n = 0

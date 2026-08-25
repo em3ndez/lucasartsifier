@@ -89,22 +89,12 @@ KNOWN_RED = {
     # emits NO warned line of its own, so the innermost speaks when the action finally happens.
     # One action, one refusal, one warning, however many guards were placed on it. Placement is
     # untouched [USER: "I think there was a good reason"]; Full and Stock never read the bit.
-    # ⛔ OPEN DEFECT, declared 2026-08-24, USER promoted to fix-now. rm32's sled case is a
-    # SINGLE ONE-ARMED IF (`(if (not local40) (claim)(slide))`) and the wrap took the whole if,
-    # so the guard speaks where stock is silent, unclaimed, and one click reaches both same-bit
-    # handlers (the room + `area`): Lite = refusal AND warning then noop, Full = doubled refusal.
-    # ⛔ The first red here prescribed a CONDITIONAL deny-claim; RE-DERIVED AND KILLED -- the
-    # observed state is local40=1, where that claim declines. The cure is placement-shaped:
-    # hoist the body's own condition, wrap only the arm; the arm's claim is then unconditional
-    # and the shipped body_claim consumes the event on the deny.
-    "test_mode.py": {
-        "the guard sits INSIDE the one-armed if (condition hoisted)":
-            "the wrap takes the whole one-armed if, so the guard speaks where stock is silent",
-        "...so the condition is tested BEFORE the guard, not inside its body":
-            "same defect, ordering pinned",
-        "and the deny path claims -- the arm's claim is unconditional now":
-            "unclaimed refusal walks to the sibling handler",
-    },
+    # ✅ PROMOTED 2026-08-24 -- the three mid-cliff checks are GREEN. `wrap_forbidden_case`
+    # hoists a case that is a SINGLE ONE-ARMED IF: the guard wraps the arm, the body's own
+    # condition stays outside, so the failing-condition state is byte-for-byte stock silence and
+    # the arm's unconditional claim lets the deny consume the event. The first cure (conditional
+    # deny-claim) was killed by re-derivation before it shipped: the observed state was
+    # local40=1, exactly where that claim declines. [[re-derive-a-reds-premise]]
     "test_toll.py": {
         # ✅ PROMOTED 2026-08-16 -- "KQ5 temple strands Brass_Bottle + Gold_Coin" and "KQ5 toll
         # item is the Staff via rm214->rm18" are GREEN and no longer listed. Both demanded that
