@@ -360,12 +360,31 @@ def resolve(c, name, script=None, log=print):
                   c.cmd("segtable"), re.I)
     if not m:
         raise RuntimeError("script %s is not loaded, so %s cannot exist here" % (script, name))
+    objs = re.findall(r"\[([0-9a-f]{4}:[0-9a-f]{4})\]\s*(\S+)\s*:",
+                      c.cmd("seginfo %d" % int(m.group(1), 16)))
     want = re.compile("^" + "".join("." if ch == "_" else re.escape(ch) for ch in name) + "$")
-    for addr, got in re.findall(r"\[([0-9a-f]{4}:[0-9a-f]{4})\]\s*(\S+)\s*:",
-                                c.cmd("seginfo %d" % int(m.group(1), 16))):
+    for addr, got in objs:
         if want.match(got):
             log("  ?%s did not resolve; script %s calls it %r at %s" % (name, script, got, addr))
             return addr
+    # ⛔ A `_a` SUFFIX IS THE DECOMPILER DISAMBIGUATING A DUPLICATE, NOT PART OF THE NAME.
+    # KQ5's script 46 holds TWO objects both called `hermit`; sluicebox emits them as `hermit_a`
+    # and `hermit_b`, so NEITHER name exists at run time and the wildcard above cannot help --
+    # `^hermit.a$` does not match `hermit`. Sorting the segment's objects by ADDRESS reproduces
+    # the source's instance order (verified against rm046.sc), so the suffix is an index: a=0,
+    # b=1. This cost the two rm046 Shell rows, which the suite reported as SKIP "script 46 holds
+    # no object matching 'hermit_a'" while the object sat in the emitted source at line 1134.
+    dup = re.match(r"^(.*)_([a-z])$", name)
+    if dup:
+        stem, nth = dup.group(1), ord(dup.group(2)) - ord("a")
+        same = sorted((a for (a, g) in objs if g == stem))
+        if len(same) > nth:
+            log("  ?%s is the decompiler's name for #%d of %d objects script %s calls %r -> %s"
+                % (name, nth + 1, len(same), script, stem, same[nth]))
+            return same[nth]
+        if same:
+            raise RuntimeError("script %s holds %d object(s) named %r, so %r (#%d) does not exist"
+                               % (script, len(same), stem, name, nth + 1))
     raise RuntimeError("script %s holds no object matching %r" % (script, name))
 
 

@@ -26,9 +26,9 @@ import sys
 from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(__file__))
-from sexpr import (code_finditer, code_search, depth1_else,  # noqa: E402
-                   form_chain, head_of, line_indent, mark_line, read_file, skip_noncode,
-                   statement_span, Sym, Str, Said)
+from sexpr import (body_forms, code_finditer, code_search, depth1_else,  # noqa: E402
+                   form_chain, head_of, line_indent, mark_line, noncode_spans, read_file,
+                   skip_noncode, statement_span, Sym, Str, Said)
 
 CONTROLLABLE_METHODS = {"handleEvent", "doVerb"}
 
@@ -137,6 +137,128 @@ def stock_and(cond):
     return "(and (not (== global%d 2)) %s)" % (MODE["g"], cond)
 
 
+# ⛔ `claimed: 0` IS AN UN-CLAIM, not a claim -- KQ5's toy shop spells one (`(28 (param1
+# claimed: 0))`, the case that deliberately hands the click on). Only a non-zero write ends the
+# dispatch, so only a non-zero write may be copied.
+_CLAIM_FORM = re.compile(r"^\(\s*([A-Za-z_][\w-]*)\s+claimed:\s*([^\s()]+)\s*\)$", re.S)
+
+# A body that can leave early skips a claim written after the exit, so "the claim is at top
+# level, therefore it always runs" stops being true. MEASURED AT THE EMITTER, 2026-08-23: 0 of
+# the 53 bodies `guarded_wrap` is handed across all five games contains either word, so this
+# costs no site today and keeps the reasoning honest the day one does.
+# ⛔ Measured at the EMITTER, not by re-reading the finished tree: a scan of the emitted text
+# mis-attributed two of KQ5 Main's RETRACTION sites -- a different emitter, a different shape --
+# as wrapped bodies carrying a `(return)`, and they are neither. [[instruments-lie-run-the-control]]
+_EARLY_EXIT = re.compile(r"\(\s*(?:return|break)\b")
+
+
+def _always_claims(text, lo, hi, spans):
+    """The event-claim that EVERY path through the body region `[lo, hi)` performs, verbatim --
+    or None when some path does not claim.
+
+    Read it as: what did this body do to the event? A statement at top level runs
+    unconditionally, so a claim there is the answer. Otherwise the only other way every path can
+    claim is a trailing two-armed `(if ... else ...)` where both arms do -- which is exactly the
+    shape a guard wrapped around an already-guarded statement leaves behind (boatRegion stacks
+    three). A `cond`/`switch` is deliberately NOT walked: without a proven default arm it can
+    fall through claiming nothing, and the honest answer there is "I cannot tell"."""
+    if _EARLY_EXIT.search(text, lo, hi):
+        return None
+    forms = body_forms(text, lo, hi, spans)
+    for (s, e) in forms:
+        m = _CLAIM_FORM.match(text[s:e])
+        if m and m.group(2) != "0":
+            return text[s:e]
+    if not forms:
+        return None
+    s, e = forms[-1]
+    if text[s] != "(" or head_of(text, s) != "if":
+        return None
+    els = depth1_else(text, s, e, spans)
+    if els is None:
+        return None                                # a one-armed `if` skips its body entirely
+    k = s + 3
+    while k < e and text[k] in " \t\n":
+        k += 1
+    cond = body_forms(text, k, e, spans)
+    if not cond:
+        return None
+    then_claim = _always_claims(text, cond[0][1], els, spans)
+    else_claim = _always_claims(text, els + 4, e - 1, spans)
+    # Either arm's spelling serves: both name the SAME event -- a method has one event
+    # parameter -- and any non-zero write ends the dispatch, so the two can differ only in how
+    # they spell true. An arm that writes `claimed: 0` is not a claim at all and has already
+    # returned None above, which is what makes taking one arm's text safe here.
+    return then_claim if (then_claim and else_claim) else None
+
+
+def body_claim(body):
+    """The claim a refusal standing in for `body` must repeat, or None.
+
+    ⭐ THE REFUSAL CONSUMES THE EVENT EXACTLY AS THE ACTION IT REPLACES DID. The deny branch is
+    entered precisely where stock would have run `body`; if that body claimed the event, stock's
+    dispatch ENDED there, and a refusal that does not claim RESUMES a walk of the cast that
+    stock had already stopped. KQ5's toy shop is where that shows: `rArm`, `theMouth`, `lArm`
+    and `toyHead` each forward `handleEvent` to `toyMaker` verbatim, so the unclaimed refusal
+    returns to its own guard with its `(|= <warned bit>)` already written and the lite
+    allow-test now true -- one click both refuses and sells, and lite gives the player no second
+    thought at all. Measured in mode FULL, whose allow-test can never be true: three refusals
+    from one click at the toy shop against one at the single-handler bakery
+    (`tools/probes/kq5_toyshop_double_fire.py`).
+
+    ⛔ THE CLAIM IS COPIED, NEVER SYNTHESIZED. Five of the emitted sites sit in a `doit`, which
+    has no event in scope at all, and the parameter is not always spelled `param1`. Copying the
+    body's own statement answers both without a table of exceptions -- a body with no claim to
+    copy is a body whose refusal must not claim either.
+
+    ⛔ AND ONLY AN UNCONDITIONAL ONE. Claiming where stock sometimes did not would silence a
+    sibling handler stock let run, which is the mirror of this same bug. rm054's grate claims
+    OUTSIDE the wrap -- the deny path falls through to it already -- and rm032's sled claims
+    only under `(not local40)`; neither gets one."""
+    text = body.strip()
+    return _always_claims(text, 0, len(text), noncode_spans(text))
+
+
+# The warned bit an ALREADY-GUARDED body carries. `(|= global<w> $<mask>)` is the mark line
+# `_ModeSite.forms` emits, and it is the only place one appears.
+_INNER_MARK = re.compile(r"\(\|= global(\d+) (\$[0-9a-fA-F]{4})\)")
+
+
+def inherited_forms(body):
+    """`(allow, warn, mark)` reusing the bit a guarded `body` already owns, or None.
+
+    ⭐ ONE ACTION, ONE WARNED BIT -- however many guards were placed on it. Lite's contract is
+    that a guard refuses ONCE and then lets the player through, and nested guards broke it: each
+    owned its own bit, so clearing the OUTER bit let the player past the outer WHILE ITS
+    CONDITION WAS STILL FALSE, which then exposed the inner, whose bit was still unset. N stacked
+    guards cost N refusals, and the middle click printed a warning and a refusal at once
+    [USER, play-tested 2026-08-23, KQ5's hermit: "it refuses twice. the second time it says you
+    have been warned AND not yet, then the third time it goes through"].
+
+    So a wrap around an already-guarded body reuses that body's bit, and emits **no warned line
+    of its own** -- the INNERMOST guard keeps it, so the message lands when the action finally
+    happens rather than one click early. Every stacking order gives exactly one refusal and
+    exactly one warning:
+
+      * outer refuses first (its condition false, bit unset) -> one "Not yet!", bit set;
+        the next click clears BOTH levels at once, and the innermost speaks.
+      * outer's condition TRUE and the inner refuses -> the inner both refuses and, next click,
+        warns. The outer contributes nothing either way.
+
+    ⛔ PLACEMENT IS NOT TOUCHED [USER: "I think there was a good reason"]. This is the Lite
+    presentation layer only: Full's allow test can never be true and Stock's is always true, so
+    neither mode ever reads the bit and neither changes by one byte."""
+    if MODE is None:
+        return None
+    m = _INNER_MARK.search(body)
+    if not m:
+        return None
+    g, w, mask = MODE["g"], int(m.group(1)), m.group(2)
+    return ("(or (== global%d 2) (and (== global%d 1) (& global%d %s)))" % (g, g, w, mask),
+            None,                                   # the innermost guard is what speaks
+            "(|= global%d %s)" % (w, mask))
+
+
 def guarded_wrap(guard_sexpr, body, refuse, site=None, deny_extra=(),
                  indent="\t\t\t", marker="; softlock-guard"):
     """The refusal-bearing wrap, in one place for every kind that says no.
@@ -154,6 +276,7 @@ def guarded_wrap(guard_sexpr, body, refuse, site=None, deny_extra=(),
                 <deny_extra lines, e.g. edgeHit resets>
                 <refuse>
                 <mark this site warned (lite only)>
+                <the body's own event claim, when the body always made one -- `body_claim`>
             )
         )
 
@@ -165,21 +288,27 @@ def guarded_wrap(guard_sexpr, body, refuse, site=None, deny_extra=(),
     2026-08-06)."""
     b = indent + "\t"
     body = body.strip()
-    forms = site.forms() if site is not None else None
+    # The refusal ends the click exactly where the body would have -- `body_claim`.
+    claim = body_claim(body)
+    # A wrap around an already-guarded body SHARES that body's warned bit -- `inherited_forms`.
+    forms = inherited_forms(body) or (site.forms() if site is not None else None)
     if forms is None:
         return (f"(if {guard_sexpr}\n{b}{body}\n{indent}else\n"
                 + "".join(f"{b}{ln}\n" for ln in deny_extra)
-                + f"{b}{refuse}  {marker}\n{indent})")
+                + f"{b}{refuse}  {marker}\n"
+                + (f"{b}{claim}\n" if claim else "")
+                + f"{indent})")
     allow, warn, mark = forms
     return (f"(if {guard_sexpr}\n{b}{body}\n{indent}else\n"
             f"{b}(if {allow}\n"
-            f"{b}\t{warn}\n"
-            f"{b}\t{body}\n"
+            + (f"{b}\t{warn}\n" if warn else "")
+            + f"{b}\t{body}\n"
             f"{b}else\n"
             + "".join(f"{b}\t{ln}\n" for ln in deny_extra)
             + f"{b}\t{refuse}\n"
             f"{b}\t{mark}\n"
-            f"{b})  {marker}\n{indent})")
+            + (f"{b}\t{claim}\n" if claim else "")
+            + f"{b})  {marker}\n{indent})")
 
 
 def is_sym(x, n=None):
@@ -815,6 +944,44 @@ def arming_contexts(text, target_script, ego=None):
     return out
 
 
+def _sole_one_armed_arm(text, bs, be, pos):
+    """The then-arm span when the body `[bs, be)` is a SINGLE ONE-ARMED `(if ...)` holding `pos`.
+
+    ⭐ HOIST THE BODY'S OWN CONDITION, WRAP ONLY THE ARM [USER, play-found 2026-08-24, KQ5 rm32
+    mid-cliff]. The sled case's whole body is `(if (not local40) (claim)(slide))` -- stock is
+    SILENT when the condition fails, and the room and the `area` feature carry the case on ONE
+    warned bit. Wrapping the whole if made the guard speak where stock says nothing, and since
+    that body's claim is conditional the deny could not consume the event (`body_claim`) -- one
+    click walked on to the second handler: Lite printed refusal AND warning then nooped, Full
+    doubled the refusal. Held at the ARM instead, the failing-condition state is byte-for-byte
+    stock, and the arm's claim is unconditional so the refusal ends the click.
+
+    ⛔ ONLY when the if is the body's SOLE statement -- a trailing statement would sit OUTSIDE
+    the wrap and run ahead of the refusal, the exact shape the whole-clause hold exists to
+    prevent. And only ONE-ARMED: a two-armed if is `wrap_forbidden_case`'s half-lamb machinery.
+
+    ⛔ The first cure derived for this defect -- a CONDITIONAL deny-claim -- was killed by
+    re-derivation before it shipped: the observed state is `local40=1`, precisely where a claim
+    conditioned on `(not local40)` declines to claim. One helper, used by every applier that
+    holds a clause: the setscript branch, `wrap_all_armings_in_source` and
+    `wrap_forbidden_case` ([[same-rule-two-places]])."""
+    stmts = body_forms(text, bs, be)
+    if len(stmts) != 1:
+        return None
+    s0, s1 = stmts[0]
+    if text[s0] != "(" or head_of(text, s0) != "if":
+        return None
+    if depth1_else(text, s0, s1) is not None:
+        return None
+    k = s0 + 3
+    while k < s1 and text[k] in " \t\n":
+        k += 1
+    _cs, ce = _block_span(text, k)                 # the condition form
+    if not (ce <= pos < s1):
+        return None                                # the anchor must sit in the ARM
+    return (ce, s1 - 1)
+
+
 def wrap_all_armings_in_source(text, placement, guard_sexpr, refuse, site=None):
     """Wrap EVERY `setScript: <target>` clause in the placement's method -- the multi-site twin
     of `wrap_trigger_in_source`'s setscript branch. KQ6's rock-stepping arms `takeStep` from FOUR
@@ -860,6 +1027,7 @@ def wrap_all_armings_in_source(text, placement, guard_sexpr, refuse, site=None):
             return text, 0                 # unholdable arming -> refuse the WHOLE site
         # the hold is the whole cond-clause where there is one, taken from the STATEMENT's start
         b = _enclosing_clause_body(region, b[0]) or b
+        b = _sole_one_armed_arm(region, b[0], b[1], ssm.start()) or b
         if b not in spans:
             spans.append(b)
     if not spans:
@@ -1641,6 +1809,7 @@ def wrap_trigger_in_source(text, placement, guard_sexpr, refuse="(NotNow)", site
             # cannot fire before the refusal (the changeState case's care) -- but the clause is
             # taken from the STATEMENT's start, not a raw paren walk's.
             b = _enclosing_clause_body(region, b[0]) or b
+            b = _sole_one_armed_arm(region, b[0], b[1], ssm.start()) or b
             if b not in spans:
                 spans.append(b)
         if not spans:
@@ -2036,19 +2205,27 @@ def wrap_forbidden_case(text, anchor_pat, token, guard_sexpr, refuse, site=None)
             if arms:
                 ts, te, es, ee = (span[0] + x for x in arms)
                 arm = (ts, te) if ts <= m.start() < te else (es, ee)
-        by_case.setdefault(span, []).append((m.start(), arm))
+        cb = _clause_body(text, span[0], span[1])
+        hoist = _sole_one_armed_arm(text, cb[0], cb[1], m.start()) if cb else None
+        by_case.setdefault(span, []).append((m.start(), arm, hoist))
     spans, arm_wraps = [], []
     for span, hits in by_case.items():
         # the narrowing engages ONLY when some arm re-gets the token (the half-lamb shape);
         # a case whose fork never re-gets keeps the whole-case wrap byte-identically (the
         # cat's and dog's race-check `if local0` would otherwise churn shipped emissions).
-        keeps = [a for (_p, a) in hits
+        keeps = [a for (_p, a, _h) in hits
                  if a is not None and get_pat.search(text[a[0]:a[1]])]
         if keeps:
-            for (_p, a) in hits:
+            for (_p, a, _h) in hits:
                 if a is not None and not get_pat.search(text[a[0]:a[1]]) \
                         and a not in arm_wraps:
                     arm_wraps.append(a)
+        elif all(h is not None for (_p, _a, h) in hits):
+            # the sole-one-armed-if hoist (see _sole_one_armed_arm): every anchor in this case
+            # sits in the arm of its single conditional -- hold the ARM, leave the test outside
+            for (_p, _a, h) in hits:
+                if h not in arm_wraps:
+                    arm_wraps.append(h)
         elif span not in spans:
             spans.append(span)
     n = 0

@@ -361,9 +361,15 @@ def _elements(text, form_start, form_end, spans):
 
     An element is a parenthesised form, a `[...]` index, or a bare token. Comments and quoted
     forms are skipped whole, so a `;` between two statements does not become one."""
+    return _scan_elements(text, form_start + 1, form_end - 1, spans)
+
+
+def _scan_elements(text, lo, hi, spans):
+    """The same walk over a BARE region `[lo, hi)` -- a span carrying no parens of its own."""
     import bisect
     starts = [s for (s, _e) in spans]
-    out, j = [], form_start + 1
+    out, j = [], lo
+    form_end = hi + 1                              # the walk's bound is exclusive of `hi`
     while j < form_end - 1:
         i = bisect.bisect_right(starts, j) - 1
         if i >= 0 and j < spans[i][1]:
@@ -405,6 +411,26 @@ def _forward_span(text, start, limit, spans):
                 return j + 1
         j += 1
     return limit
+
+
+def body_forms(text, start, end, spans=None):
+    """`[(s, e), ...]`, one per top-level STATEMENT of the body region `[start, end)`.
+
+    `_elements` answers this for a parenthesised form; a body is the version without parens of
+    its own -- an `if` arm, a cond clause's body, the text a guard is about to wrap. A bare
+    token comes back as its own span, so a caller can tell `(foo)` from `else`."""
+    if spans is None:
+        spans = noncode_spans(text)
+    out = []
+    for s in _scan_elements(text, start, end, spans):
+        if text[s] == "(":
+            out.append((s, _forward_span(text, s, end, spans)))
+        else:
+            j = s
+            while j < end and text[j] not in _WS and text[j] not in "()":
+                j += 1
+            out.append((s, j))
+    return out
 
 
 def form_chain(text, pos, spans=None):

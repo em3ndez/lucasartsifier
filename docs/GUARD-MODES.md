@@ -26,7 +26,8 @@ lite behaves as full there [user ruling at plan time]; stock bypasses them too.
 
 - **Mode global** = the first index past everything the assembled game declares OR
   references (`patcher._init_mode`): LSL2 `global481` (stock rm63 already reads
-  `global480` out of bounds), KQ4 `global401`, KQ6 `global171`.
+  `global480` out of bounds), KQ4 `global401`, KQ6 `global171`, LB2 `global400`,
+  KQ5 `global402`.
 - **Warned bits** = one bit per guard site in trailing bitmask words after the mode
   global (`global482+` / `global402+` / `global172+`), allocated in emission order; a
   multi-clause placement shares one bit ("every guard fires once" is per guard).
@@ -73,13 +74,58 @@ takes the disposal branch.
   file with the most literal `AddMenu` declarations; appending cannot shift any existing
   menu code, including KQ4's runtime Debug menu). Its handler case (before the
   handleEvent switch's own `else`, reusing the switch's temp) runs a 3-button chooser on
-  the derived display proc. LSL2 = Sound menu code 1283, KQ4 = 1284 (computed, not
-  declared).
-- **SCI1.1** (KQ6): an `iconGuards` ControlIcon added to the `of GameControls` panel, one
-  row below the deepest existing row (pitch derived from the row ladder, window grown by
-  the same pitch), its face the blank inset plate the window's own `open` draws — every
-  button face in the panel art has a word baked into it, so borrowing one ships a control
-  that lies about what it does.
+  the derived display proc. LSL2 = menu code 776, KQ4 = 772 (computed, not declared) --
+  the `Action` menu on both, since the user rejected the Sound menu the first cut appended
+  to; the 1283/1284 this line used to name were that first cut's Sound-menu codes.
+- **SCI1 / SCI1.1** (KQ6, LB2, KQ5): an `iconGuards` ControlIcon added to the `of
+  GameControls` panel, one row below the deepest existing row (pitch derived from the row
+  ladder, window grown to fit), its face a blank plate out of the panel's own art — every
+  button face in it has a word baked in, so borrowing one ships a control that lies about
+  what it does.
+
+  ### ⭐ ONE CONSTRUCT, FIVE SPELLINGS (2026-08-21)
+
+  KQ5 and LB2 shipped with **no picker at all** — `install_mode_chooser` found no host,
+  retracted the mode, and every guard emitted permanently full-strength. Both games have
+  the panel. The installer knew exactly one spelling of each part of it, KQ6's:
+
+  | part | KQ6 | KQ5 | LB2 |
+  |---|---|---|---|
+  | the panel | `(instance X of GameControls)` | **`(class KQ5Controls of GameControls)`**, instantiated twice (fast/slow window) | instance |
+  | the row ladder | `(= nsTop (+ 0 (if (== global107 256) 103 else 104) 10))` | same idiom, **unparenthesised `if`** and a second term in front | **literal `nsTop 108` properties** |
+  | the face | a blank plate the panel DRAWS at the deepest row | **never drawn at all** — 76×16 art the panel carries and does not use | drawn beside a different control |
+  | the chooser | `Print … addButton:` | **no `addButton:` anywhere in KQ5** — asks with `(proc255_0 <text> 81 {label} value)` | `Print` |
+  | the window | one, taking a `bottom:` send | **two** windows | **assigns `(= bottom …)`** and draws its own bevel at literal coordinates |
+
+  So each part is now read off the game rather than matched against KQ6's spelling:
+  `_panel_host` (a GameControls that parks itself in the global `ControlIcon` hides it
+  through — which is also what tells the settings panel apart from KQ5's save-game
+  selector, a GameControls too), `_panel_controls` (the ladder off the CONTROLS, with
+  `_balanced_span` doing the paren walk), `_is_blank_cel` (a plate is recognised by BEING
+  BLANK: inset past the bevel, one colour — unique in all three games, and it reproduces
+  KQ6's shipped 947/1/2), the game's own vocabulary for the dialog form, and every window
+  in either spelling for the growth.
+
+  Two capabilities underneath had to be added to ask those questions. `sci_gfx.decode_view`
+  had no SCI1 path — KQ5's views are VGA with SCI0's loop tables and SCI1.1's byte-run
+  pixels, and read through the EGA nibble decoder they came back as structured noise with
+  the right sizes and nothing thrown. And `sci_gfx.view_palette`, because **two different
+  palette indices can be the same colour**: KQ5's panel writes text in index 0 and the only
+  blank plate its art carries is a text-entry field whose interior is index 254, and both
+  are `(0, 0, 0)`. The label drew and could not be seen. The rule is now that the label may
+  not be the colour of what it is written on; where it is, it takes the plate's own bevel
+  colour, which is legible on that interior by construction.
+
+  ### The window grows by what the row NEEDS, not by a pitch
+
+  A pitch is the natural growth and is enough while the new row is no taller than a rung.
+  The plates are not: KQ6's is 22 against a pitch of 20, LB2's is 23. KQ6 had slack to
+  absorb the overhang; LB2 did not, and its plate lost its bottom bevel to the window edge.
+  So the window is MEASURED — `bottom - top`, evaluated out of the game's own art
+  (`_const_eval` resolves `CelWide`/`CelHigh` and takes the larger arm of an `(if …)`) — and
+  the growth is `max(pitch, what the row needs)`: KQ6 **20** (unchanged), LB2 **22**, KQ5
+  **20** (its rect is per-print-language and not constant, and its 16px plate needs nothing
+  more).
 
   ### ⭐ THE ONE BIT: a borrowed face must not ask for a press animation
 
@@ -138,7 +184,7 @@ takes the disposal branch.
 
 `src/test_mode.py`: wrapper structure per mode (guard verbatim, body duplicated, mark in
 deny only, classic v25 shape when unconfigured), allocator word rollover, UI installers
-against the real game files (codes 1283/1284, balance), surface neutrality (guards.py /
+against the real game files (codes 776/772, balance), surface neutrality (guards.py /
 missability.py never touch the mode machinery), and the mini-project declaration flow.
 Plus, for the panel control: **the press animation is only asked for when the face is a
 two-cel button pair** — checked against the decoded art and the class constant, not
@@ -182,6 +228,22 @@ loop needs nobody at the keyboard):
 - the panel's own controls (SPEECH, sliders) still work ✔
 - **control**: reinstalling v31's `903` and holding the mouse on the control reproduces the
   artifact exactly as reported, and v32 does not ✔
+
+### LB2 and KQ5, driven under ScummVM 2026-08-21 (NOT play-tested)
+
+Both games' choosers were built, installed into scratch copies and driven with the same
+XTEST harness (`tools/kq5_panel_probe.py`, `tools/lb2_panel_probe.py`):
+
+- **both BOOT** with a recompiled script 0 — which for LB2 is the §7ak crash not recurring;
+- the panel carries `GUARDS / FULL` in its icon column, below `PLAY`, framed like the
+  panel's own buttons and inside a window that grew to hold it;
+- clicking it closes the panel and opens the chooser — `Softlock guards: / now: full` with
+  Full/Lite/Off on LB2 (a `Print`), `Softlock guards -- now: full` with the same three on
+  KQ5 (a `proc255_0` button dialog, because KQ5 has no `addButton:`);
+- picking **Lite** and reopening the panel reads `GUARDS / LITE`.
+
+⚠️ **That is a driven check, not a play test**, and it moves emissions that ARE play-confirmed
+(`v3.1-kq5`, `v1.0-lb2`). Nothing here says the guards themselves still behave.
 
 ### Confirmed by the user in play, 2026-08-08
 

@@ -122,6 +122,198 @@ def test_wrapper_shapes():
     T.MODE = None
 
 
+def test_deny_claims_the_event():
+    """THE REFUSAL MUST CONSUME THE EVENT EXACTLY AS THE ACTION IT REPLACES DID.
+
+    The deny branch is entered precisely where stock would have run the body. If that body
+    ended by claiming the event, stock's dispatch stopped there -- so a refusal that does not
+    claim RESUMES a dispatch stock had already ended, and every later cast member gets the same
+    click. KQ5's toy shop is the measured case: four Props (`rArm`, `theMouth`, `lArm`,
+    `toyHead`) each forward `handleEvent` to `toyMaker` verbatim, so the unclaimed refusal comes
+    straight back to the same guard -- by which time its own `(|= <warned bit>)` has run, the
+    lite allow-test is true, and ONE CLICK BOTH REFUSES AND SELLS. Measured in mode FULL, where
+    the allow-test can never be true: three "Better not." boxes from one click at the toy shop
+    against one at the single-handler bakery (tools/probes/kq5_toyshop_double_fire.py).
+
+    The claim is COPIED FROM THE BODY, never synthesized: five of the emitted sites sit in a
+    `doit`, which has no event at all, and the parameter is not always spelled `param1`. A body
+    that does not unconditionally claim gets no claim -- rm054's grate claims OUTSIDE the wrap
+    and rm032's sled claims only under `(not local40)`, and inventing one for either would stop
+    a dispatch stock let run."""
+    print("\n-- guarded_wrap: the deny path consumes the event as the body did --")
+    guard = "(not (gEgo has: 9))"
+    refuse = "(proc255_0 {Not yet!})"
+
+    def deny_of(text):
+        """The deny branch: everything after the LAST refusal."""
+        return text[text.rindex(refuse) + len(refuse):]
+
+    _fake_mode()
+    claiming = "(gRoom setScript: getSled)\n(param1 claimed: 1)"
+    w = T.guarded_wrap(guard, claiming, refuse, site=T._ModeSite())
+    # ⛔ NO `detail` ON THE DECLARED-RED CHECKS. `run_tests.CHECK` captures the whole line
+    # after `[FAIL]`, so an appended `  -- <the wrapper text>` becomes part of the name and the
+    # KNOWN_RED key stops matching -- the runner then reports the same check as UNEXPECTED
+    # FAILURE and RED WENT GREEN at once. Print the wrapper by hand when debugging instead.
+    check("a body that claims makes the refusal claim too",
+          "(param1 claimed: 1)" in deny_of(w))
+    check("...exactly once, and the body's own two are untouched",
+          w.count("(param1 claimed: 1)") == 3)
+
+    T.MODE = None
+    c = T.guarded_wrap(guard, claiming, refuse)
+    check("the classic (mode-unconfigured) wrap claims on its deny path too",
+          "(param1 claimed: 1)" in deny_of(c))
+    _fake_mode()
+
+    # ...and the three shapes that must NOT gain a claim.
+    silent = "(proc0_2)\n(gRoom setScript: enterGrate)"
+    w = T.guarded_wrap(guard, silent, refuse, site=T._ModeSite())
+    check("a body that never claims gets no claim (rm054's grate claims outside the wrap)",
+          "claimed:" not in w, w)
+
+    doit = "(gEgo setMotion: 0)\n(= local3 1)"
+    w = T.guarded_wrap(guard, doit, refuse, site=T._ModeSite())
+    check("a doit body -- no event in scope -- gets no claim", "claimed:" not in w, w)
+
+    conditional = "(if (not local40)\n\t(param1 claimed: 1)\n\t(gEgo setScript: useSled)\n)"
+    w = T.guarded_wrap(guard, conditional, refuse, site=T._ModeSite())
+    check("a body that claims only on SOME path gets no claim (rm032's sled)",
+          w.count("(param1 claimed: 1)") == 2, w)
+
+    unclaim = "(param1 claimed: 0)"
+    w = T.guarded_wrap(guard, unclaim, refuse, site=T._ModeSite())
+    check("an explicit UN-claim is not a claim to copy",
+          "(param1 claimed: 1)" not in w, w)
+
+    # the parameter is not always spelled `param1`
+    named = "(gRoom setScript: getSled)\n(evt claimed: 1)"
+    w = T.guarded_wrap(guard, named, refuse, site=T._ModeSite())
+    check("the claim is copied from the body, so a differently-named event carries",
+          "(evt claimed: 1)" in deny_of(w) and "param1" not in w)
+
+    # NESTED WRAPS -- boatRegion stacks three guards on one statement. Once the inner deny
+    # claims, EVERY path through the inner emission claims, so the outer refusal must too.
+    inner = T.guarded_wrap("(gEgo has: 30)", claiming, refuse, site=T._ModeSite())
+    outer = T.guarded_wrap(guard, inner, refuse, site=T._ModeSite())
+    check("a body whose every arm claims (a nested guard) makes the outer refusal claim",
+          outer.count("(param1 claimed: 1)") == 2 * inner.count("(param1 claimed: 1)") + 1)
+    check("nested wrap balanced", _balanced(outer))
+    check("every deny shape stays balanced",
+          all(_balanced(x) for x in (c, w, inner, outer)))
+
+
+def test_nested_wraps_share_one_warned_bit():
+    """ONE ACTION, ONE WARNED BIT -- however many guards were placed on it.
+
+    [USER, play-tested 2026-08-23, KQ5 rm046: *"the hermit is buggy. it refuses twice. the
+    second time it says you have been warned AND not yet, then the third time it goes through"*]
+
+    Lite's contract is that a guard refuses ONCE and then lets you through. Nested guards broke
+    it: each owns its own bit, and clearing the OUTER bit lets the player past the outer while
+    its condition is still FALSE -- which then exposes the inner, whose bit is still unset. So N
+    stacked guards cost N refusals, and the middle click prints a warning and a refusal at once.
+    KQ5 stacks them at rm046 (2 bits on the Shell) and boatRegion (3 bits on `leave`, whose
+    three conditions are BYTE-IDENTICAL).
+
+    The fix is at the Lite layer, not at placement [USER: *"I think there was a good reason"*]:
+    a wrap around an already-guarded body REUSES that body's bit and emits no warned line of its
+    own, so the innermost is what speaks when the action finally happens. Full and Stock never
+    consult the bit, so neither is touched."""
+    print("\n-- guarded_wrap: nested wraps share ONE warned bit --")
+    _fake_mode()
+    body = "(gRoom setScript: giveShell)\n(param1 claimed: 1)"
+    refuse = "(proc255_0 {Not yet!})"
+    WARN = "You have been warned!"
+
+    inner = T.guarded_wrap("(gEgo has: 30)", body, refuse, site=T._ModeSite())
+    outer = T.guarded_wrap("(gEgo has: 31)", inner, refuse, site=T._ModeSite())
+
+    masks = set(re.findall(r"\|= global(\d+) (\$\w+)", outer))
+    check("a wrap around a guarded body allocates NO second warned bit",
+          len(masks) == 1)
+    check("...and it is the inner guard's own bit",
+          masks == set(re.findall(r"\|= global(\d+) (\$\w+)", inner)))
+    check("the outer's allow test reads that same bit",
+          outer.count("(& global482 $0001)") >= 1 and "$0002" not in outer)
+    # the body is duplicated once per wrap, so the inner's warn appears twice; the outer must
+    # contribute none of its own.
+    check("only the innermost guard speaks the warned line",
+          outer.count(WARN) == inner.count(WARN) * 2)
+    check("one refusal per action: the outer still refuses, the inner is not reached",
+          outer.count(refuse) == inner.count(refuse) * 2 + 1)
+    check("nested wrap stays balanced", _balanced(outer))
+
+    # three deep -- boatRegion's shape -- still one bit
+    third = T.guarded_wrap("(gEgo has: 9)", outer, refuse, site=T._ModeSite())
+    check("three stacked guards still share ONE bit",
+          len(set(re.findall(r"\|= global(\d+) (\$\w+)", third))) == 1)
+    check("three deep stays balanced", _balanced(third))
+
+    # ...and an UNNESTED wrap is untouched: it still allocates and still warns
+    plain = T.guarded_wrap("(gEgo has: 5)", body, refuse, site=T._ModeSite())
+    check("a lone guard still allocates its own bit and speaks",
+          len(set(re.findall(r"\|= global(\d+) (\$\w+)", plain))) == 1
+          and plain.count(WARN) == 1)
+
+
+def test_one_armed_case_hoists_its_condition():
+    """A case that is a SINGLE ONE-ARMED IF gets the guard INSIDE the arm, not around the if.
+
+    [USER, play-found 2026-08-24, KQ5 rm32 mid-cliff.] The sled case's whole body is
+    `(if (not local40) (claim) (slide))` -- stock is SILENT when local40 is set, and both the
+    room and the `area` feature carry the case on one warned bit. Wrapping the WHOLE if made the
+    guard speak where stock says nothing, unclaimed, so one click reached both handlers: Lite
+    printed refusal AND warning then nooped, Full doubled the refusal.
+
+    ⛔ The first declared red here prescribed a CONDITIONAL deny-claim -- re-derivation killed
+    it: the observed state is local40=1, exactly where a claim conditioned on (not local40)
+    declines to claim. The cure is PLACEMENT-shaped instead: hoist the body's own condition,
+    wrap only the arm. Then the failing-condition state is byte-for-byte stock silence, and in
+    the guarded state the arm's claim is unconditional so the deny consumes the event
+    (`body_claim`, already shipped). Engaged ONLY when the if is the case's sole statement --
+    trailing statements would out-run the refusal."""
+    print("\n-- wrap_forbidden_case: a sole one-armed if hoists its condition --")
+    _fake_mode()
+    CASE = ("(method (handleEvent param1)\n"
+            "\t(switch (param1 message:)\n"
+            "\t\t(4\n"
+            "\t\t\t(switch (global9 indexOf: (global69 curInvIcon:))\n"
+            "\t\t\t\t(29\n"
+            "\t\t\t\t\t(if (not local40)\n"
+            "\t\t\t\t\t\t(param1 claimed: 1)\n"
+            "\t\t\t\t\t\t(gEgo setScript: useSled)\n"
+            "\t\t\t\t\t)\n"
+            "\t\t\t\t)\n"
+            "\t\t\t)\n"
+            "\t\t)\n"
+            "\t)\n"
+            ")\n")
+    out, n = T.wrap_forbidden_case(CASE, r"setScript:\s*useSled", 29,
+                                   "(gEgo has: 2)", "(proc255_0 {Not yet!})")
+    check("the wrap landed", n == 1, out)
+    # index() raises on a red run; the checks must FAIL red, not crash the file
+    cond_at = out.find("(if (not local40)")
+    guard_at = out.find("(if (gEgo has: 2)")
+    # ⛔ no `detail` on declared-red checks -- the runner keys on the whole line
+    check("the guard sits INSIDE the one-armed if (condition hoisted)",
+          0 <= cond_at < guard_at and "softlock-guard" in out[cond_at:])
+    check("...so the condition is tested BEFORE the guard, not inside its body",
+          0 <= cond_at < guard_at)
+    deny = out[out.rindex("(proc255_0 {Not yet!})"):]
+    check("and the deny path claims -- the arm's claim is unconditional now",
+          "(param1 claimed: 1)" in deny)
+    check("hoisted wrap stays balanced", _balanced(out))
+
+    # the guard must NOT engage the hoist when the if is not the case's only statement
+    TRAILING = CASE.replace("\t\t\t\t\t)\n\t\t\t\t)\n",
+                            "\t\t\t\t\t)\n\t\t\t\t\t(param1 claimed: 1)\n\t\t\t\t)\n")
+    out2, n2 = T.wrap_forbidden_case(TRAILING, r"setScript:\s*useSled", 29,
+                                     "(gEgo has: 2)", "(proc255_0 {Not yet!})")
+    check("a case with a TRAILING statement keeps the whole-case wrap (siblings must not outrun)",
+          n2 == 1 and 0 <= out2.find("(if (gEgo has: 2)") < out2.find("(if (not local40)"), out2)
+
+
 def test_ui_installers():
     print("\n-- UI installers on the real game files --")
     scratch = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build",
@@ -130,23 +322,43 @@ def test_ui_installers():
     # placed by EXCLUDING the device menus (sound/speed/file, identified by what their handler
     # cases call), not by naming one, after the user rejected the Sound menu it used to append
     # to. LSL2's Action has 7 items (separators count) so ours is 8 -> 776; KQ4's has 3 -> 772.
-    cases = [("lsl2", "../build/ir/src/Menu.sc", "(proc255_0 {%s})", "menu", 776),
-             ("kq4", "../build/kq4/src/Menu.sc", "(proc255_0 {%s})", "menu", 772),
-             ("kq6", "../build/sweep/kq6/src/kq6Controls.sc", "(proc921_0 {%s})", "panel", None)]
+    #
+    # ⭐ EVERY GAME WITH A SETTINGS SURFACE IS A CASE (2026-08-21). KQ5 and LB2 shipped with NO
+    # picker -- the mode retracted itself because neither panel matched the ONE spelling the
+    # SCI1.1 installer knew (KQ6's). Both games DO have the construct; they spell it differently
+    # (KQ5 declares its panel as a `class` with two instances and hangs its row constants off an
+    # unparenthesised `if`; LB2 writes its rows as literal `nsTop` properties). A case per game
+    # is what keeps a spelling census honest -- see [[kq5-polygon-instance-spelling]].
+    #
+    # ⛔ AND EACH CASE IS THE GAME'S WHOLE SOURCE TREE, not the one file the chooser edits. Both
+    # installers read the DIRECTORY -- which file holds the menu bar, which holds the settings
+    # panel (a game can have two `of GameControls`), what the icon class's press and dismiss bits
+    # are, whether the game's vocabulary has `addButton:` at all, what number a font global
+    # resolves to. A case that stages three hand-picked files measures a project no game has, and
+    # every one of those derivations would answer differently here than in the pipeline.
+    cases = [("lsl2", "LSL2", "../build/ir/src", "Menu.sc", "(proc255_0 {%s})", "menu", 776),
+             ("kq4", "KQ4", "../build/kq4/src", "Menu.sc", "(proc255_0 {%s})", "menu", 772),
+             ("kq6", "KQ6", "../build/sweep/kq6/src", "kq6Controls.sc",
+              "(proc921_0 {%s})", "panel", None),
+             ("dagger", "dagger", "../build/sweep/dagger/src", "lb2GameControls.sc",
+              "(proc255_0 {%s})", "panel", None),
+             ("kq5", "kq5", "../build/sweep/kq5/src", "slowControls.sc",
+              "(proc255_0 {%s})", "panel", None)]
     here = os.path.dirname(os.path.abspath(__file__))
-    for game, rel, form, want_ui, want_code in cases:
-        src = os.path.normpath(os.path.join(here, rel))
-        if not os.path.exists(src):
-            print("  [skip] %s source not present (%s)" % (game, src))
+    for game, cfg_name, rel, edits, form, want_ui, want_code in cases:
+        tree = os.path.normpath(os.path.join(here, rel))
+        if not os.path.exists(os.path.join(tree, edits)):
+            print("  [skip] %s source not present (%s)" % (game, os.path.join(tree, edits)))
             continue
+        src = os.path.join(tree, edits)
         d = os.path.join(scratch, game, "src")
         shutil.rmtree(os.path.join(scratch, game), ignore_errors=True)
-        os.makedirs(d)
-        shutil.copy(src, d)
+        shutil.copytree(tree, d, ignore=shutil.ignore_patterns("*.json"))
         P._RETRACTION_FORM = form
+        import config as _cfgmod
         row = P._install_menu_chooser(d, 481)
         if row is None:
-            row = P._install_panel_chooser(d, 481)
+            row = P._install_panel_chooser(d, 481, cfg=_cfgmod.by_name(cfg_name))
         ok = row is not None and row.get("applied") and row.get("ui") == want_ui
         if want_code is not None:
             ok = ok and row.get("menu_code") == want_code
@@ -166,6 +378,22 @@ def test_ui_installers():
             check("%s chooser shows the current level" % game,
                   _names_all(edited, "now: %s"), edited[:0])
             body = edited[edited.find("instance iconGuards"):]
+            # ⭐ THE CONTROL MUST READ AS ONE OF THE PANEL'S OWN. Its face is a cel of the SAME
+            # view the panel's controls use, spelled the way the panel spells it -- a literal
+            # `view N` where the siblings carry one (KQ6, LB2), and the sibling's own runtime
+            # assignment where they do not (KQ5 picks its view by language: `(= view
+            # (localproc_1))`). An icon that hard-codes 946 there is an icon that shows English
+            # art in the German build, so what is pinned is that the control names the view the
+            # SAME WAY a sibling does, not that it names a number.
+            sib_view = re.search(r"\(instance\s+\w+\s+of\s+ControlIcon\b[^\0]*?"
+                                 r"(?:\bview\s+(\d+)\b|\(=\s*view\s+(\([^\n]*\))\))",
+                                 edited[:edited.find("instance iconGuards")])
+            spelling = (sib_view.group(1) or sib_view.group(2)) if sib_view else None
+            check("%s control names its view the way the panel's own controls do" % game,
+                  spelling is not None
+                  and (re.search(r"\bview\s+%s\b" % re.escape(spelling), body)
+                       or ("(= view %s)" % spelling) in body),
+                  "siblings spell it %r; control body: %s" % (spelling, body[:300]))
             # ⭐ IT MUST NOT ASK FOR A PRESS ANIMATION IT HAS NO ART FOR. `IconI::select` draws
             # cel 1 of the icon's own loop while the mouse is held and cel 0 on release -- the
             # SCI convention that a control's loop is a two-cel {up, down} pair. Our face is
@@ -175,33 +403,49 @@ def test_ui_installers():
             # the strip and the inset are exactly what three play reports described. The
             # REQUIREMENT is "no animation without a pair", so that is what this pins -- against
             # the game's own art and the game's own class constant, not against a signal number.
-            face = re.search(r"view\s+(\d+)\s+loop\s+(\d+)\s+cel\s+(\d+)\s+signal\s+(\d+)",
+            face = re.search(r"loop\s+(\d+)\s+cel\s+(\d+)\s+signal\s+(\d+)",
                              re.sub(r"\s+", " ", body))
             check("%s control declares a face and a signal" % game, bool(face), body[:400])
             if face:
-                v, lp, cl, sig = (int(face.group(i)) for i in (1, 2, 3, 4))
+                lp, cl, sig = (int(face.group(i)) for i in (1, 2, 3))
+                v = row.get("face_view")
+                check("%s installer reports the view number it measured the art at" % game,
+                      isinstance(v, int), repr(row))
                 # read the art -- and say so LOUDLY if it cannot be read, because "no pair" is
                 # also this check's pass-by-default and a silent fallback would pin nothing
                 import config, sci_gfx, sci_resource
-                cels = sci_gfx.decode_view(
-                    sci_resource.Sci0Game(config.KQ6.resource_dir), v)[lp]["cels"]
+                gm = sci_resource.Sci0Game(config.by_name(cfg_name).resource_dir)
+                loops = sci_gfx.decode_view(gm, v)
+                cels = loops[lp]["cels"]
                 pair = (cl == 0 and len(cels) > 1
                         and (cels[0].width, cels[0].height) == (cels[1].width, cels[1].height))
                 bit = P._icon_press_bit(d)
                 check("%s control animates its press only if its face is a two-cel button pair"
                       % game, pair or not (sig & bit),
                       "signal %d, press bit %#x, face %d/%d/%d pair=%s" % (sig, bit, v, lp, cl, pair))
-                # the sibling half: the check is only meaningful if the panel's REAL buttons do
-                # read as pairs, so the art reader is not simply always saying no
+                # ⭐ AND THE FACE MUST CARRY NO WORD OF ITS OWN. Every button face in these panels
+                # has one baked into the art (SAVE / RESTORE / QUIT ...), so borrowing one ships a
+                # control that lies about what it does -- the v26 build grew a second "SAVE". A
+                # PLATE is recognised by having no interior detail at all: inset past the bevel
+                # and every remaining pixel is one colour. Asserted on the art, so a face chosen
+                # by any future rule still has to be blank.
+                check("%s the control's face is a BLANK plate, not a lettered button" % game,
+                      P._is_blank_cel(cels[cl]),
+                      "face %d/%d/%d is %dx%d" % (v, lp, cl, cels[cl].width, cels[cl].height))
+                # the sibling half: the checks above are only meaningful if the panel's REAL
+                # buttons read as lettered pairs, so the art reader is not simply always saying no
                 sibs = [(int(m.group(1)), int(m.group(2))) for m in
-                        re.finditer(r"view\s+(\d+)\s+loop\s+(\d+)\s+cel\s+0\s+message\s+0\s+signal",
-                                    re.sub(r"\s+", " ", edited))]
-                pairs = [(sv, sl) for sv, sl in sibs
-                         if len(sib := sci_gfx.decode_view(
-                             sci_resource.Sci0Game(config.KQ6.resource_dir), sv)[sl]["cels"]) > 1
-                         and (sib[0].width, sib[0].height) == (sib[1].width, sib[1].height)]
-                check("%s the pair test recognises the panel's own buttons" % game,
-                      len(pairs) >= 3, "button faces %s read as pairs: %s" % (sibs, pairs))
+                        re.finditer(r"\(instance\s+\w+\s+of\s+(?:ControlIcon|IconI)\b\s*"
+                                    r"\(properties\s*(?:name\s+\S+\s*)?"
+                                    r"(?:view\s+\d+\s*)?loop\s+(\d+)\s+cel\s+(\d+)\b",
+                                    re.sub(r"[ \t]+", " ", edited))]
+                pairs = [(sl, sc) for sl, sc in sibs
+                         if sl < len(loops) and len(sib := loops[sl]["cels"]) > 1
+                         and (sib[0].width, sib[0].height) == (sib[1].width, sib[1].height)
+                         and not P._is_blank_cel(sib[sc])]
+                check("%s the pair test recognises the panel's own lettered buttons" % game,
+                      len(pairs) >= 3, "sibling faces %s read as lettered pairs: %s"
+                                       % (sibs, pairs))
             # ...AND IT MUST HIDE THE PANEL BEFORE OPENING THE CHOOSER, AND RETURN TRUE.
             # `iconAbout`, in the same file, opens a dialog from this same panel correctly:
             # `(super select: &rest) (global63 hide:) (KQ6Print ... init:)`. Two orderings matter
@@ -212,18 +456,32 @@ def test_ui_installers():
             # over a window it has just disposed. The requirement is the ORDER and the RETURN,
             # so that is what this pins -- not "no dialog", which is what the first cut of this
             # check asserted and which cost the UI the user preferred.
-            hide, printed = body.find("hide:"), body.find("Print")
+            #
+            # ⛔ THE CHOOSER IS NOT ALWAYS A `Print` (2026-08-21). KQ5 is SCI1: it has no
+            # `addButton:` selector anywhere in the game, and its own About control asks with
+            # `(proc255_0 <text> 81 {label} value ...)` -- the SCI0/SCI1 button-dialog idiom the
+            # MENU chooser already emits. So the dialog form is derived from the game's
+            # vocabulary, and what these checks look for is THE CHOOSER, spelled as the first
+            # mode button label, not the word `Print`.
+            ask = body.find(P._mode_button(0))
+            hide = body.find("hide:")
+            check("%s opens a chooser at all" % game, ask >= 0, body[:500])
             check("%s hides the panel before opening the chooser" % game,
-                  printed < 0 or (0 <= hide < printed), body[:500])
+                  ask < 0 or (0 <= hide < ask), body[:500])
             sel = body[body.find("(method (select"):]
             check("%s chooser select returns true so the panel's modal loop exits" % game,
-                  printed < 0 or "(return 1)" in sel, sel[:400])
+                  ask < 0 or "(return 1)" in sel, sel[:400])
             # and it must never re-enter the panel's own modal loop: `(<panel> show:)` from
             # inside a control runs `GameControls::show` a second time from within itself, so
             # dismissing only ever returns to the outer loop (v29: the panel never closed).
-            panel_inst = re.search(r"\(instance\s+(\w+)\s+of\s+GameControls\b", edited)
+            # ⛔ BY THE PANEL'S OWN NAMES, BOTH OF THEM: KQ5 declares its panel as a `class` with
+            # two instances and reaches it through the global it parks itself in, so a check that
+            # only knew `(instance X of GameControls)` asked nothing there.
+            names = set(re.findall(r"\((?:instance|class)\s+(\w+)\s+of\s+GameControls\b", edited))
+            names |= set(re.findall(r"\(=\s*(global\d+)\s+self\)", edited))
             check("%s control never re-shows the panel from inside it" % game,
-                  not panel_inst or ("(%s show:)" % panel_inst.group(1)) not in body, body[:500])
+                  names and not any(("(%s show:)" % n) in body for n in names),
+                  "panel names %s; body: %s" % (sorted(names), body[:400]))
         if want_ui == "menu":
             # ...and it must not land on the audio menu
             host = re.search(r"\(AddMenu\s+\{([^}]*)\}\s+\{[^}]*Guards", edited)
@@ -491,6 +749,9 @@ def test_review_defects():
 
 def run():
     test_wrapper_shapes()
+    test_deny_claims_the_event()
+    test_nested_wraps_share_one_warned_bit()
+    test_one_armed_case_hoists_its_condition()
     test_review_defects()
     test_ui_installers()
     test_mode_stays_out_of_the_surface()

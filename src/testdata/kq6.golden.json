@@ -1,0 +1,129 @@
+{
+  "action_specs": [
+    "skull@rm420: (not (gEgo has: 11))"
+  ],
+  "dangerous": [
+    "huntersLamp@rm240->3 rooms",
+    "mint@rm180->1 rooms",
+    "peppermint@rm180->1 rooms",
+    "sacredWater@rm180->18 rooms"
+  ],
+  "death_signal": [
+    171,
+    1
+  ],
+  "debug_globals": [],
+  "edge_specs": [
+    "rm155->rm200: (not ((ScriptID 70 0) stateOf690:)) [REFUSED]",
+    "rm200->rm550: (or (not (and (not (proc913_0 14)) (proc913_0 25))) (or (proc913_0 74) (and (gEgo has: 19) (== global161 15))))",
+    "rm220->rm730: (and (gEgo has: 8) (gEgo has: 24) (gEgo has: 27) (or (gEgo has: 23) (gEgo has: 31)))",
+    "rm230->rm710: (and (gEgo has: 8) (gEgo has: 17) (gEgo has: 24) (gEgo has: 44) (or (gEgo has: 23) (gEgo has: 31)))",
+    "rm300->rm550: (or (not (and (not (proc913_0 14)) (proc913_0 25))) (or (proc913_0 74) (and (gEgo has: 19) (== global161 15))))",
+    "rm340->rm155: (and (gEgo has: 7) (gEgo has: 11) (gEgo has: 24) (gEgo has: 46))",
+    "rm340->rm370: (and (gEgo has: 2) (gEgo has: 18) (gEgo has: 41) (gEgo has: 48))",
+    "rm340->rm405: (and (gEgo has: 2) (gEgo has: 18) (gEgo has: 41) (gEgo has: 48))",
+    "rm340->rm440: (and (gEgo has: 2) (gEgo has: 18) (gEgo has: 41) (gEgo has: 48))",
+    "rm420->rm435: (gEgo has: 18)",
+    "rm450->rm550: (or (not (and (not (proc913_0 14)) (proc913_0 25))) (or (proc913_0 74) (and (gEgo has: 19) (== global161 15))))",
+    "rm500->rm550: (or (not (and (not (proc913_0 14)) (proc913_0 25))) (or (proc913_0 74) (and (gEgo has: 19) (== global161 15))))",
+    "rm550->rm580: (or (proc913_0 74) (and (gEgo has: 19) (== global161 15)))",
+    "rm560->rm550: (or (not (and (not (proc913_0 14)) (proc913_0 25))) (or (proc913_0 74) (and (gEgo has: 19) (== global161 15))))",
+    "rm560->rm580: (or (proc913_0 74) (and (gEgo has: 19) (== global161 15)))",
+    "rm580->rm550: (or (not (and (not (proc913_0 14)) (proc913_0 25))) (or (proc913_0 74) (and (gEgo has: 19) (== global161 15))))",
+    "rm640->rm650: (and (gEgo has: 17) (gEgo has: 44))",
+    "rm660->rm670: (and (gEgo has: 15) (gEgo has: 24))",
+    "rm660->rm670: (proc913_0 58)",
+    "rm680->rm155: (== ((ScriptID 70 0) stateOf690:) 2) [REFUSED]",
+    "rm680->rm155: (not ((ScriptID 70 0) stateOf690:)) [REFUSED]",
+    "rm680->rm155: None [REFUSED]"
+  ],
+  "exhaustion": [],
+  "fatal_uses": [
+    "skull@rm420/throwSkull"
+  ],
+  "gate_specs": [],
+  "goal_rooms": [
+    180
+  ],
+  "groups": [
+    "mint or peppermint@750"
+  ],
+  "joint": [],
+  "market": [],
+  "market_specs": [],
+  "ownedby_death_folds": [],
+  "placements": [
+    "Main/mint: applied=True kind=None",
+    "Main/peppermint: applied=True kind=None",
+    "Main/sacredWater: applied=True kind=None",
+    "nightMare: applied=True kind=proc-arm sites=1",
+    "pullOutMapScr: applied=True kind=travel-dispatch sites=0",
+    "pullOutMapScr: applied=True kind=travel-dispatch sites=0",
+    "pullOutMapScr: applied=True kind=travel-dispatch sites=0",
+    "pullOutMapScr: applied=True kind=travel-dispatch sites=1",
+    "rCliffs: applied=True kind=entry-frontier sites=5 entry_sites=2",
+    "rgCastle: applied=True kind=flag-write-owner sites=1",
+    "rm220: applied=True kind=setscript sites=2",
+    "rm230: applied=True kind=setscript sites=1",
+    "rm340: applied=True kind=direct sites=1",
+    "rm340: applied=True kind=setscript sites=1",
+    "rm420->rm435: applied=False kind=not-found why=no controllable trigger (not-found) and no room-property exit",
+    "rm420/skull: applied=True kind=setscript sites=1",
+    "rm550: applied=True kind=arm-clause sites=1",
+    "rm560: applied=True kind=edge-exit sites=1",
+    "rm560: applied=True kind=edge-exit sites=1",
+    "rm580: applied=True kind=edge-exit sites=1",
+    "rm640: applied=True kind=setscript sites=1",
+    "rm660: applied=True kind=setscript sites=1",
+    "rm660: applied=True kind=setscript sites=1",
+    "rm740: applied=True kind=flag-write sites=1",
+    "rm880: applied=True kind=flag-write sites=1",
+    "rmNone->rmNone/huntersLamp: applied=False kind=None why=not a pure sink: the same clause also moves item(s) [25] -- this is a TRADE, and deleting the disposal would hand the player both sides of it"
+  ],
+  "register_strandings": [
+    "letter@reg338=1->[730, 870]"
+  ],
+  "register_value_strandings": [],
+  "register_write_specs": [
+    "reg338=1: (gEgo has: 20)"
+  ],
+  "sinks": [
+    "huntersLamp@rm240 dest=-1 refused=False",
+    "mint@rm0 dest=280 refused=False",
+    "peppermint@rm0 dest=0 refused=False",
+    "sacredWater@rm0 dest=0 refused=False"
+  ],
+  "softlock_items": [
+    "brick",
+    "deadMansCoin",
+    "dagger",
+    "skull",
+    "gauntlet",
+    "handkerchief",
+    "holeInTheWall",
+    "huntersLamp",
+    "letter",
+    "mint",
+    "mirror",
+    "nightingale",
+    "peppermint",
+    "sacredWater",
+    "scarf",
+    "skeletonKey",
+    "teaCup",
+    "tinderBox"
+  ],
+  "start_room": 99,
+  "tolls": [
+    "deadMansCoin@one-visit-pocket-carry-in/rm340->rm155",
+    "gauntlet@one-visit-pocket-carry-in/rm660->rm670",
+    "handkerchief@one-visit-toll-pocket/rm340->rm155",
+    "holeInTheWall@one-visit-pocket-carry-in/rm420->rm435",
+    "mirror@one-visit-pocket-carry-in/rm340->rm155",
+    "mirror@one-visit-pocket-carry-in/rm660->rm670",
+    "sacredWater@one-visit-toll-pocket/rm370->rm380",
+    "skeletonKey@one-visit-toll-pocket/rm340->rm155",
+    "teaCup@one-visit-pocket-carry-in/rm340->rm155"
+  ],
+  "window_specs": []
+}

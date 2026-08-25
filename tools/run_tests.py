@@ -74,6 +74,27 @@ KNOWN_RED = {
     # host's own `init` is in the SHIPPED emission (`castle.sc`) and the orphan's `script:` is
     # read at `rm054.sc:448-449`. Only the REACHABLE REFUSAL is missing, on the strength of one
     # play test. The retirement stands; the margin was overstated by exactly one condition.
+    # ✅ PROMOTED 2026-08-23 -- the five "the deny path never claims the event" checks are GREEN
+    # and no longer listed. `trigger.guarded_wrap` now ends its refusal with the body's OWN claim
+    # statement, copied verbatim, whenever every path through that body made one (`body_claim`).
+    # The refusal stands where stock would have run the body, so it consumes the event exactly as
+    # the action it replaces did; KQ5's toy shop no longer re-enters its own guard through the
+    # four Props that forward `handleEvent` to `toyMaker`.
+    # Emitted-tree control against a worktree at 0679a3f: LSL2, KQ4, KQ6 and LB2 BYTE-IDENTICAL;
+    # KQ5 gains 34 `(param1 claimed: 1)` lines in 10 files and loses nothing. The four checks
+    # that must NOT gain a claim stayed green throughout and are the limit the cure may not
+    # overrun.
+    # ✅ PROMOTED 2026-08-23 -- the five "nested guards each own a warned bit" checks are GREEN.
+    # `trigger.inherited_forms`: a wrap around an already-guarded body reuses that body's bit and
+    # emits NO warned line of its own, so the innermost speaks when the action finally happens.
+    # One action, one refusal, one warning, however many guards were placed on it. Placement is
+    # untouched [USER: "I think there was a good reason"]; Full and Stock never read the bit.
+    # ✅ PROMOTED 2026-08-24 -- the three mid-cliff checks are GREEN. `wrap_forbidden_case`
+    # hoists a case that is a SINGLE ONE-ARMED IF: the guard wraps the arm, the body's own
+    # condition stays outside, so the failing-condition state is byte-for-byte stock silence and
+    # the arm's unconditional claim lets the deny consume the event. The first cure (conditional
+    # deny-claim) was killed by re-derivation before it shipped: the observed state was
+    # local40=1, exactly where that claim declines. [[re-derive-a-reds-premise]]
     "test_toll.py": {
         # ✅ PROMOTED 2026-08-16 -- "KQ5 temple strands Brass_Bottle + Gold_Coin" and "KQ5 toll
         # item is the Staff via rm214->rm18" are GREEN and no longer listed. Both demanded that

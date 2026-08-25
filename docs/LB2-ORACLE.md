@@ -688,6 +688,36 @@ declaring a game class will hit it. The fix belongs in scicompile (species for a
 class from the game's own compiled resources — `LoadClassFromCompiled` exists) or a classdef
 `class#` pin generated from the IR, which knows every species.
 
+### ⭐⭐ §7am. BOTH CONDITIONS OF §7ak ARE MET — LB2 HAS A PICKER (2026-08-21)
+
+§7ak ended "guard modes for LB2 = delete-the-files, **until either an LB2 panel idiom is derived
+or the species gap is fixed**". Re-measured, both are:
+
+**The panel idiom was there all along, in a spelling the installer did not read.** LB2 writes its
+icon rows as literal `nsTop` PROPERTIES (`nsTop 8 / 28 / 48 / 68 / 88 / 108`) where KQ6 writes
+`(= nsTop (+ 0 (if (== global107 256) 103 else 104) 10))`, and `_install_panel_chooser` looked
+only for the second. Same construct, same 20px pitch, same ladder — [[kq5-polygon-instance-
+spelling]] a third time. Two more of LB2's spellings differed and are now read as well: its
+window ASSIGNS its rect inside `open` (`(= bottom …)`) instead of taking a `bottom:` send, and it
+draws its own bevel with twelve `Graph` line calls at LITERAL screen coordinates — so growing the
+rect alone left the fill reaching past a border that stayed put, and `_frame_edges` now moves the
+bottom edge with it (the endpoints split cleanly into two clusters at their largest gap: 33/34/35
+and 164/165/166).
+
+**The species drift does not reproduce.** Rebuilt on today's toolchain, our recompiled script 0
+numbers `WrapMusic` **134**, `Actions` **46**, `LB2` **135** — every one the stock number, read
+out of the compiled heap. The v1 crash chain is not re-armed by shipping Main, and the game boots:
+title card, newsroom, icon bar, panel. (What changed between 2026-08-11 and now is not identified;
+the measurement is the claim, and the `install_mode_chooser` feasibility gate stays exactly where
+it is, because a game with no hostable chooser must still retract.)
+
+So LB2 ships **6 files** — `Main`, `lb2GameControls`, `rm210`, `rm280`, `rm300`, `rm520` — with
+the mode plumbing and a `GUARDS / FULL` control under PLAY. Verified under ScummVM: the control
+reads the mode, clicking it closes the panel and opens `Softlock guards: / now: full` with
+Full/Lite/Off, and picking LITE and reopening reads `GUARDS / LITE`.
+
+⚠️ Still to do: a PLAY test. This moves the emission play-confirmed at `v1.0-lb2`.
+
 ### ⭐⭐ §7ai. THE PASS WALLS ARE RETIRED — an unreachable need is a retired need (2026-08-10, latest; commits `61817b7` + the delegate-rule follow-up)
 
 **THE SHIP-BLOCKER IS CLOSED.** The two act-blind `has: 6` demands (`rm26->rm355` at stage 2,
